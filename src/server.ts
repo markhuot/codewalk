@@ -1,5 +1,6 @@
 import { watch } from "node:fs";
 import {
+  addCommentToStep,
   clearServerInfo,
   currentId,
   getFocus,
@@ -9,6 +10,7 @@ import {
   stateDir,
   writeReply,
 } from "./store.ts";
+import type { LineComment } from "./types.ts";
 import { renderFragment, renderPage } from "./render/html.ts";
 import type { Walk } from "./types.ts";
 
@@ -73,14 +75,24 @@ export function serve(port: number): { port: number; stop: () => void } {
         return Response.json(activeWalk());
       }
 
-      // The browser composer POSTs a comment here; it lands in the same inbox a
-      // pane reply would, so the agent's blocking `walk await` picks it up.
+      // The browser "complete step" POSTs a submission here: an overall message
+      // plus any staged line comments. It lands in the same inbox a pane reply
+      // would, so the agent's blocking `walk await` picks it up in one turn.
       if (url.pathname === "/api/reply" && req.method === "POST") {
         try {
-          const body = (await req.json()) as { text?: string; stepId?: string | null };
-          const text = (body.text ?? "").trim();
-          if (!text) return Response.json({ ok: false, error: "empty" }, { status: 400 });
-          const reply = writeReply(text, { stepId: body.stepId ?? null, source: "web" });
+          const body = (await req.json()) as { text?: string; message?: string; stepId?: string | null; comments?: LineComment[] };
+          const message = (body.message ?? body.text ?? "").trim();
+          const comments = Array.isArray(body.comments) ? body.comments : [];
+          if (!message && comments.length === 0) return Response.json({ ok: false, error: "empty" }, { status: 400 });
+          const stepId = body.stepId ?? null;
+          // Persist each line comment inline on the step so it renders on its line.
+          if (stepId) {
+            for (const c of comments) {
+              const label = c.endLine && c.endLine > c.line ? `(lines ${c.line}–${c.endLine}) ${c.text}` : c.text;
+              addCommentToStep(stepId, { file: c.file, line: c.line, side: c.side, body: label });
+            }
+          }
+          const reply = writeReply(message, { stepId, source: "web", comments });
           return Response.json({ ok: true, reply });
         } catch (e) {
           return Response.json({ ok: false, error: String(e) }, { status: 400 });

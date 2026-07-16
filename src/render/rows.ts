@@ -3,8 +3,9 @@
 // a mouse click can map a screen row back to a specific file line for
 // click-to-comment. Code is syntax-highlighted over the diff background bands.
 
-import type { Comment, DiffFile, LineAnchor, Reply, Step, Walk } from "../types.ts";
+import type { Comment, DiffFile, LineAnchor, LineComment, Reply, Step, Walk } from "../types.ts";
 import { highlightLine, langFor } from "./highlight.ts";
+import { bandColors } from "./theme.ts";
 
 export interface Row {
   ansi: string;
@@ -21,9 +22,8 @@ const red = (s: string) => e("31", s);
 const cyan = (s: string) => e("36", s);
 const yellow = (s: string) => e("33", s);
 const blue = (s: string) => e("34", s);
+const magenta = (s: string) => e("35", s);
 
-const ADD_BG = "\x1b[48;2;18;38;30m";
-const DEL_BG = "\x1b[48;2;42;22;27m";
 const RESET = "\x1b[0m";
 
 function clip(s: string, budget: number): string {
@@ -38,11 +38,12 @@ function codeRow(opts: {
   oldN?: number;
   newN?: number;
   marker: "+" | "-" | " ";
-  band?: typeof ADD_BG | typeof DEL_BG;
+  band?: string;
+  markColor?: string;
   content: string;
   lang: string | undefined;
 }): string {
-  const { cols, wide, oldN, newN, marker, band, content, lang } = opts;
+  const { cols, wide, oldN, newN, marker, band, markColor, content, lang } = opts;
   const oldS = String(oldN ?? "").padStart(4, " ");
   const newS = String(newN ?? "").padStart(4, " ");
   const gutter = dim(wide ? `${oldS} ${newS} ` : `${newS} `);
@@ -58,8 +59,7 @@ function codeRow(opts: {
   }
   // Fill the band to the right edge so the background spans the row.
   const pad = " ".repeat(Math.max(0, cols - gutterW - 2 - clipped.length));
-  const markColor = marker === "+" ? "\x1b[38;2;87;171;90m" : "\x1b[38;2;229;115;115m";
-  return gutter + band + markColor + marker + " " + RESET + band + highlighted + pad + RESET;
+  return gutter + band + (markColor ?? "") + marker + " " + RESET + band + highlighted + pad + RESET;
 }
 
 function statusTag(status: DiffFile["status"]): string {
@@ -117,7 +117,15 @@ function commentRows(c: Comment, cols: number): Row[] {
   return rows;
 }
 
-function fileRows(file: DiffFile, comments: Comment[], cols: number): Row[] {
+function draftRows(c: LineComment, cols: number): Row[] {
+  const bar = magenta("┆");
+  const range = c.endLine && c.endLine > c.line ? `–${c.endLine}` : "";
+  const rows: Row[] = [{ ansi: `      ${bar} ${magenta("staged")} ${dim(`${c.file}:${c.line}${range}`)}` }];
+  for (const l of wrap(c.text, cols - 10)) rows.push({ ansi: `      ${bar} ${l}` });
+  return rows;
+}
+
+function fileRows(file: DiffFile, comments: Comment[], cols: number, pending: LineComment[]): Row[] {
   const rows: Row[] = [];
   const path = file.status === "renamed" ? `${file.oldPath} → ${file.newPath}` : file.newPath || file.oldPath;
   const stat = dim("+") + green(String(file.additions)) + dim(" −") + red(String(file.deletions));
@@ -127,10 +135,14 @@ function fileRows(file: DiffFile, comments: Comment[], cols: number): Row[] {
     return rows;
   }
   const lang = langFor(file.newPath || file.oldPath);
+  const bc = bandColors();
   const wide = cols >= 64;
   const fileComments = comments.filter((x) => x.file === file.newPath || x.file === file.oldPath);
   const commentsAt = (side: "old" | "new", line?: number) =>
     line == null ? [] : fileComments.filter((x) => x.side === side && x.line === line);
+  const filePending = pending.filter((x) => x.file === file.newPath || x.file === file.oldPath);
+  const pendingAt = (side: "old" | "new", line?: number) =>
+    line == null ? [] : filePending.filter((x) => x.side === side && x.line === line);
 
   for (const hunk of file.hunks) {
     const header = `@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@`;
@@ -138,12 +150,12 @@ function fileRows(file: DiffFile, comments: Comment[], cols: number): Row[] {
     for (const l of hunk.lines) {
       if (l.type === "add") {
         rows.push({
-          ansi: codeRow({ cols, wide, newN: l.newNumber, marker: "+", band: ADD_BG, content: l.content, lang }),
+          ansi: codeRow({ cols, wide, newN: l.newNumber, marker: "+", band: bc.addBg, markColor: bc.addMark, content: l.content, lang }),
           anchor: l.newNumber != null ? { file: file.newPath, line: l.newNumber, side: "new" } : undefined,
         });
       } else if (l.type === "del") {
         rows.push({
-          ansi: codeRow({ cols, wide, oldN: l.oldNumber, marker: "-", band: DEL_BG, content: l.content, lang }),
+          ansi: codeRow({ cols, wide, oldN: l.oldNumber, marker: "-", band: bc.delBg, markColor: bc.delMark, content: l.content, lang }),
           anchor: l.oldNumber != null ? { file: file.oldPath, line: l.oldNumber, side: "old" } : undefined,
         });
       } else {
@@ -154,6 +166,8 @@ function fileRows(file: DiffFile, comments: Comment[], cols: number): Row[] {
       }
       for (const c of commentsAt("old", l.oldNumber)) rows.push(...commentRows(c, cols));
       for (const c of commentsAt("new", l.newNumber)) rows.push(...commentRows(c, cols));
+      for (const c of pendingAt("old", l.oldNumber)) rows.push(...draftRows(c, cols));
+      for (const c of pendingAt("new", l.newNumber)) rows.push(...draftRows(c, cols));
     }
   }
   return rows;
@@ -174,7 +188,7 @@ function threadRows(replies: Reply[], cols: number): Row[] {
 }
 
 /** The scrollable content rows for the focused step. */
-export function buildContentRows(step: Step, replies: Reply[], cols: number): Row[] {
+export function buildContentRows(step: Step, replies: Reply[], cols: number, pending: LineComment[] = []): Row[] {
   const rows: Row[] = [];
   if (step.kind === "prose") {
     rows.push(...proseRows(step.text, cols));
@@ -182,7 +196,7 @@ export function buildContentRows(step: Step, replies: Reply[], cols: number): Ro
     if (step.title) rows.push({ ansi: bold(step.title) }, { ansi: "" });
     if (step.note) rows.push(...proseRows(step.note, cols), { ansi: "" });
     for (const f of step.files) {
-      rows.push(...fileRows(f, step.comments, cols));
+      rows.push(...fileRows(f, step.comments, cols, pending));
       rows.push({ ansi: "" });
     }
   }

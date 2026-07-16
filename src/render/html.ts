@@ -1,4 +1,5 @@
 import { marked } from "marked";
+import { highlightHtml, langFor } from "./highlight-html.ts";
 import type { Comment, DiffFile, DiffStep, Focus, Reply, Step, Walk } from "../types.ts";
 
 function esc(s: string): string {
@@ -31,6 +32,7 @@ function renderFile(file: DiffFile, comments: Comment[]): string {
     ? `${esc(file.oldPath)} → ${esc(file.newPath)}`
     : esc(file.newPath || file.oldPath);
 
+  const lang = langFor(file.newPath || file.oldPath);
   let body = "";
   if (file.binary) {
     body = `<div class="binary">Binary file not shown.</div>`;
@@ -46,11 +48,18 @@ function renderFile(file: DiffFile, comments: Comment[]): string {
       for (const l of hunk.lines) {
         const cls = l.type === "add" ? "line-add" : l.type === "del" ? "line-del" : "line-ctx";
         const marker = l.type === "add" ? "+" : l.type === "del" ? "-" : " ";
+        // Each code row carries its identity so a click can stage a line comment.
+        const side = l.type === "del" ? "old" : "new";
+        const lineNo = l.type === "del" ? l.oldNumber : l.newNumber;
+        const path = l.type === "del" ? file.oldPath : file.newPath;
+        const attrs = lineNo != null
+          ? ` data-file="${esc(path)}" data-line="${lineNo}" data-side="${side}"`
+          : "";
         rows.push(
-          `<tr class="${cls}">` +
+          `<tr class="${cls} commentable"${attrs}>` +
           `<td class="gutter">${l.oldNumber ?? ""}</td>` +
           `<td class="gutter">${l.newNumber ?? ""}</td>` +
-          `<td class="code"><span class="marker">${marker}</span>${esc(l.content) || "&nbsp;"}</td></tr>`,
+          `<td class="code"><span class="marker">${marker}</span>${highlightHtml(l.content, lang) || "&nbsp;"}</td></tr>`,
         );
         for (const c of commentsFor(fileComments, "old", l.oldNumber)) rows.push(renderCommentRow(c));
         for (const c of commentsFor(fileComments, "new", l.newNumber)) rows.push(renderCommentRow(c));
@@ -124,7 +133,11 @@ export function renderFragment(
   const idx = focusId ? walk.steps.findIndex((s) => s.id === focusId) : -1;
   const step = idx >= 0 ? walk.steps[idx] : null;
 
-  const marker = `<div id="focus-marker" data-step-id="${esc(step ? step.id : "")}" hidden></div>`;
+  // data-seq lets the client tell "agent advanced" (seq changed) from "same
+  // step, just re-rendered" (e.g. a comment was added), which drives the
+  // working indicator.
+  const seq = ctx.focus?.seq ?? 0;
+  const marker = `<div id="focus-marker" data-step-id="${esc(step ? step.id : "")}" data-seq="${seq}" hidden></div>`;
   const header =
     `<header class="walk-header"><div class="walk-eyebrow">${esc(walk.title)}</div>` +
     (step ? `<div class="walk-progress">${progressDots(total, idx)}<span class="step-count">Step ${idx + 1} of ${total}</span></div>` : "") +
@@ -158,9 +171,10 @@ export function renderPage(): string {
 </head>
 <body>
 <main id="walk"></main>
+<div id="working" class="working" hidden><span class="spinner"></span><span id="working-text">Agent is reviewing your comments…</span></div>
 <form id="composer" class="composer" hidden>
-  <textarea id="composer-input" rows="1" placeholder="Comment on this step… (⌘/Ctrl+Enter to send)"></textarea>
-  <button type="submit" id="composer-send">Send to Claude</button>
+  <textarea id="composer-input" rows="1" placeholder="Overall note for this step (optional). Click any line to comment on it."></textarea>
+  <button type="submit" id="composer-send">Complete step</button>
 </form>
 <div id="status" class="status">connecting…</div>
 <script>${PAGE_SCRIPT}</script>
@@ -215,6 +229,22 @@ const PAGE_STYLES = `
   --hunk-bg: #161b22; --hunk-fg: #8b949e; --accent: #58a6ff; --comment-bg: #2d2a12;
   --comment-border: #6a5a1f; --reply-bg: #121d2f; --reply-border: #1f6feb; --surface: #0d1117;
 }
+/* Syntax palette (light default, overridden per theme). GitHub-ish. */
+:root { --syn-key: #cf222e; --syn-str: #0a3069; --syn-num: #0550ae; --syn-com: #6e7781; --syn-fn: #8250df; --syn-type: #953800; --syn-attr: #0550ae; }
+@media (prefers-color-scheme: dark) {
+  :root { --syn-key: #ff7b72; --syn-str: #a5d6ff; --syn-num: #79c0ff; --syn-com: #8b949e; --syn-fn: #d2a8ff; --syn-type: #ffa657; --syn-attr: #79c0ff; }
+}
+:root[data-theme="light"] { --syn-key: #cf222e; --syn-str: #0a3069; --syn-num: #0550ae; --syn-com: #6e7781; --syn-fn: #8250df; --syn-type: #953800; --syn-attr: #0550ae; }
+:root[data-theme="dark"] { --syn-key: #ff7b72; --syn-str: #a5d6ff; --syn-num: #79c0ff; --syn-com: #8b949e; --syn-fn: #d2a8ff; --syn-type: #ffa657; --syn-attr: #79c0ff; }
+.hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-section, .hljs-doctag, .hljs-operator { color: var(--syn-key); }
+.hljs-string, .hljs-regexp, .hljs-char.escape_, .hljs-subst { color: var(--syn-str); }
+.hljs-number { color: var(--syn-num); }
+.hljs-comment, .hljs-quote { color: var(--syn-com); font-style: italic; }
+.hljs-title, .hljs-title.function_, .hljs-function .hljs-title { color: var(--syn-fn); }
+.hljs-type, .hljs-class .hljs-title, .hljs-title.class_, .hljs-built_in { color: var(--syn-type); }
+.hljs-attr, .hljs-attribute, .hljs-variable, .hljs-property, .hljs-params, .hljs-template-variable { color: var(--syn-attr); }
+.hljs-tag, .hljs-name, .hljs-selector-id, .hljs-selector-class { color: var(--syn-key); }
+.hljs-meta { color: var(--syn-com); }
 * { box-sizing: border-box; }
 body {
   margin: 0; background: var(--bg); color: var(--fg);
@@ -292,9 +322,38 @@ main { max-width: 980px; margin: 0 auto; padding: 24px 20px 140px; }
   font-size: 13px; font-weight: 600; padding: 8px 14px; cursor: pointer; white-space: nowrap;
 }
 .composer button:disabled { opacity: .5; cursor: default; }
+.composer .pending-count { display: inline-block; margin-left: 6px; background: rgba(255,255,255,.25); border-radius: 10px; padding: 0 7px; font-size: 12px; }
 .status { position: fixed; bottom: 16px; right: 16px; font-size: 12px; color: var(--muted); background: var(--code-bg); border: 1px solid var(--border); border-radius: 20px; padding: 4px 12px; z-index: 11; }
 .status.live { color: var(--marker-add); }
 .status.sent { color: var(--accent); }
+/* Click-to-comment affordance on code rows. */
+.commentable { cursor: pointer; }
+.commentable:hover .gutter::after { content: "+"; position: absolute; margin-left: -14px; color: var(--accent); font-weight: 700; }
+.commentable:hover { outline: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); outline-offset: -1px; }
+/* A staged (not yet sent) line comment. */
+.draft-row td { padding: 8px; }
+.draft-box { background: var(--comment-bg); border: 1px dashed var(--comment-border); border-radius: 6px; padding: 8px 12px; font-family: -apple-system, sans-serif; }
+.draft-box .draft-label { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted); font-family: ui-monospace, monospace; margin-bottom: 4px; }
+.draft-box .draft-tag { color: var(--accent); text-transform: uppercase; letter-spacing: .04em; font-weight: 600; }
+.draft-box textarea { width: 100%; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--fg); font: 13px/1.5 -apple-system, sans-serif; padding: 6px 8px; resize: vertical; }
+.draft-box .draft-actions { margin-top: 6px; display: flex; gap: 8px; }
+.draft-box button { border: none; border-radius: 6px; font-size: 12px; font-weight: 600; padding: 5px 10px; cursor: pointer; }
+.draft-box .draft-add { background: var(--accent); color: #fff; }
+.draft-box .draft-cancel { background: var(--code-bg); color: var(--muted); }
+.draft-box.staged { border-style: solid; }
+.draft-box.staged .draft-text { white-space: normal; }
+.working {
+  position: fixed; left: 50%; transform: translateX(-50%); bottom: 16px;
+  width: min(900px, calc(100% - 32px)); display: flex; align-items: center; gap: 12px;
+  background: var(--surface); border: 1px solid var(--accent); border-radius: 12px;
+  padding: 14px 18px; box-shadow: 0 8px 30px rgba(0,0,0,.18); z-index: 12;
+  font-size: 14px; color: var(--fg);
+}
+/* The [hidden] attribute must win over the flex display above. */
+.working[hidden], .composer[hidden] { display: none; }
+.spinner { width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; flex: none; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2s; } }
 `;
 
 const PAGE_SCRIPT = `
@@ -303,16 +362,99 @@ const statusEl = document.getElementById('status');
 const composer = document.getElementById('composer');
 const input = document.getElementById('composer-input');
 const sendBtn = document.getElementById('composer-send');
+const workingEl = document.getElementById('working');
 let firstLoad = true;
 
-function currentFocusId() {
-  const m = document.getElementById('focus-marker');
-  return m ? (m.getAttribute('data-step-id') || '') : '';
+// Staged (not yet sent) line comments for the current step, and the working
+// state that shows while the agent reviews a completed step.
+let pending = [];
+let working = false;
+let workingSeq = null;
+
+function marker() { return document.getElementById('focus-marker'); }
+function currentFocusId() { const m = marker(); return m ? (m.getAttribute('data-step-id') || '') : ''; }
+function currentSeq() { const m = marker(); return m ? (m.getAttribute('data-seq') || '') : ''; }
+function key(c) { return c.file + ':' + c.side + ':' + c.line; }
+
+function syncUI() {
+  const id = currentFocusId();
+  composer.hidden = !id || working;
+  workingEl.hidden = !working;
+  const n = pending.length;
+  sendBtn.textContent = 'Complete step';
+  if (n) sendBtn.innerHTML = 'Complete step<span class="pending-count">' + n + '</span>';
 }
 
-function syncComposer() {
-  const id = currentFocusId();
-  composer.hidden = !id;
+// Re-inject staged draft boxes under their rows after every fragment refresh.
+function renderPending() {
+  for (const c of pending) {
+    const sel = 'tr.commentable[data-file="' + (window.CSS ? CSS.escape(c.file) : c.file) + '"][data-line="' + c.line + '"][data-side="' + c.side + '"]';
+    const row = walkEl.querySelector(sel);
+    if (!row) continue;
+    const tr = document.createElement('tr');
+    tr.className = 'draft-row';
+    tr.innerHTML = '<td class="gutter"></td><td class="gutter"></td><td><div class="draft-box staged">' +
+      '<div class="draft-label"><span class="draft-tag">staged</span> ' + c.file + ':' + c.line + '</div>' +
+      '<div class="draft-text"></div></div></td>';
+    tr.querySelector('.draft-text').textContent = c.text;
+    row.after(tr);
+  }
+  syncUI();
+}
+
+let activeDraft = null;
+function openDraft(row) {
+  if (working) return;
+  if (activeDraft) activeDraft.remove();
+  const file = row.getAttribute('data-file');
+  const line = parseInt(row.getAttribute('data-line'), 10);
+  const side = row.getAttribute('data-side');
+  const tr = document.createElement('tr');
+  tr.className = 'draft-row';
+  tr.innerHTML = '<td class="gutter"></td><td class="gutter"></td><td><div class="draft-box">' +
+    '<div class="draft-label"><span class="draft-tag">new comment</span> ' + file + ':' + line + '</div>' +
+    '<textarea rows="2" placeholder="Comment on this line… (Enter to stage, Esc to cancel)"></textarea>' +
+    '<div class="draft-actions"><button class="draft-add" type="button">Add comment</button>' +
+    '<button class="draft-cancel" type="button">Cancel</button></div></div></td>';
+  row.after(tr);
+  activeDraft = tr;
+  const ta = tr.querySelector('textarea');
+  ta.focus();
+  const commit = () => {
+    const text = ta.value.trim();
+    if (text) { pending = pending.filter(p => key(p) !== key({file,line,side})); pending.push({ file, line, side, text }); }
+    activeDraft = null; tr.remove(); renderPending();
+  };
+  const cancel = () => { activeDraft = null; tr.remove(); };
+  tr.querySelector('.draft-add').addEventListener('click', commit);
+  tr.querySelector('.draft-cancel').addEventListener('click', cancel);
+  ta.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); commit(); }
+    else if (e.key === 'Escape') { e.preventDefault(); cancel(); }
+  });
+}
+
+walkEl.addEventListener('click', (e) => {
+  const row = e.target.closest('tr.commentable');
+  if (row && !e.target.closest('.draft-box')) openDraft(row);
+});
+
+async function complete() {
+  const stepId = currentFocusId();
+  if (!stepId || working) return;
+  // Empty + nothing staged means "looks good, continue" — same as the pane.
+  const message = input.value.trim() || (pending.length === 0 ? '👍 Looks good — continue.' : '');
+  working = true; workingSeq = currentSeq(); activeDraft = null;
+  syncUI();
+  try {
+    await fetch('/api/reply', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message, comments: pending, stepId }),
+    });
+    pending = []; input.value = ''; input.style.height = 'auto';
+  } catch (e) {
+    working = false; statusEl.textContent = 'send failed'; syncUI();
+  }
 }
 
 async function refresh() {
@@ -322,43 +464,19 @@ async function refresh() {
     const prevFocus = currentFocusId();
     const y = window.scrollY;
     walkEl.innerHTML = html;
-    syncComposer();
+    // Clear the working state once the agent advances or re-presents (seq changed).
+    if (working && currentSeq() !== workingSeq) { working = false; pending = []; }
+    renderPending();
     const newFocus = currentFocusId();
-    // Advancing to a new step returns to the top; staying on the same step
-    // (e.g. a reply was added) preserves the reader's scroll position.
     if (newFocus && newFocus !== prevFocus) window.scrollTo({ top: 0, behavior: firstLoad ? 'auto' : 'smooth' });
     else window.scrollTo(0, y);
     firstLoad = false;
   } catch (e) { /* keep last render on transient failure */ }
 }
 
-async function send() {
-  const text = input.value.trim();
-  if (!text) return;
-  sendBtn.disabled = true;
-  try {
-    await fetch('/api/reply', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ text, stepId: currentFocusId() }),
-    });
-    input.value = '';
-    input.style.height = 'auto';
-    statusEl.textContent = '✓ sent to Claude';
-    statusEl.classList.add('sent');
-    setTimeout(() => statusEl.classList.remove('sent'), 2000);
-  } catch (e) {
-    statusEl.textContent = 'send failed';
-  } finally {
-    sendBtn.disabled = false;
-  }
-}
-
-composer.addEventListener('submit', (e) => { e.preventDefault(); send(); });
+composer.addEventListener('submit', (e) => { e.preventDefault(); complete(); });
 input.addEventListener('input', () => { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 160) + 'px'; });
-input.addEventListener('keydown', (e) => {
-  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); send(); }
-});
+input.addEventListener('keydown', (e) => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); complete(); } });
 
 function connect() {
   const es = new EventSource('/events');

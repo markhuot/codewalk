@@ -39,7 +39,7 @@ The binary is `walk`. During development run it as `bun run <repo>/src/cli.ts <a
 | Target | What happens | When |
 |---|---|---|
 | `pane` | Splits a pane beside you (herdr or tmux), renders the step, and blocks for a typed comment. **Default inside a multiplexer.** | You're in a herdr or tmux session (the usual case). |
-| `web` | Starts the live browser view; the human types in a composer and clicks "Send to Claude". Add `--open` to open the browser. | No multiplexer, or the human prefers a browser. |
+| `web` | Starts the live browser view; the human clicks lines to stage comments, then clicks **Complete step** to send them. Add `--open` to open the browser. | No multiplexer, or the human prefers a browser. |
 | `cli` | Prints a rich inline diff to stdout. Does **not** block — the reply is simply the human's next chat message. **Default with no multiplexer.** | You can't open a pane or browser (e.g. running headless inside another tool). |
 
 Other flags: `--no-wait` (present without blocking), `--timeout <sec>` (give up waiting and return control), `--port <n>` (web port, default 4599).
@@ -103,6 +103,6 @@ The walk is not frozen once it starts. Revise it freely in response to what the 
 
 Because only the focused step is shown, extra or superseded steps don't clutter the reader's view — so don't hesitate to insert, re-scope, or reorder as the conversation goes. A walk is a conversation, not a script you read start to finish.
 
-## Presenting: call it inline, not in the background
+## Presenting: always call it inline (never in the background)
 
-`walk present` blocks and prints the human's reply to stdout when the wait ends. Run it **inline** (in the foreground) so that reply comes straight back to you as the command's output — don't background it and poll a file, that just adds latency. Pass `--timeout <sec>` (≤ 600) so a long silence returns control instead of hanging.
+`walk present` blocks and prints the human's reply to stdout when the wait ends. Run it **inline, in the foreground, for every render target — pane, web, and cli alike.** The reply then comes straight back to you as the command's output. Do not background it (and do not background `walk await`): a backgrounded call writes to a file you then have to go read, which adds a whole extra round-trip for no benefit. Pass `--timeout <sec>` (≤ 600, the Bash tool's ceiling) so a long silence returns control instead of hanging, and just call `present` again to keep waiting.

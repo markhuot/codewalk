@@ -19,7 +19,7 @@ import {
   writeReply,
 } from "./store.ts";
 import { buildContentRows, type Row } from "./render/rows.ts";
-import type { Focus, LineAnchor, Step, Walk } from "./types.ts";
+import type { Focus, LineAnchor, LineComment, Step, Walk } from "./types.ts";
 
 const HEADER_H = 3;
 const FOOTER_H = 3;
@@ -53,6 +53,10 @@ interface State {
   commentTarget: LineAnchor | null;
   dragging: boolean;
   dragStartLine: number;
+  pending: LineComment[];
+  working: boolean;
+  workingSeq: number;
+  spinFrame: number;
   status: string;
   lastSeq: number;
 }
@@ -67,9 +71,27 @@ const state: State = {
   commentTarget: null,
   dragging: false,
   dragStartLine: 0,
+  pending: [],
+  working: false,
+  workingSeq: -1,
+  spinFrame: 0,
   status: "",
   lastSeq: -1,
 };
+
+const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+let spinTimer: ReturnType<typeof setInterval> | null = null;
+function startSpinner(): void {
+  if (spinTimer) return;
+  spinTimer = setInterval(() => {
+    state.spinFrame = (state.spinFrame + 1) % SPINNER.length;
+    render();
+  }, 90);
+}
+function stopSpinner(): void {
+  if (spinTimer) clearInterval(spinTimer);
+  spinTimer = null;
+}
 
 const SELECTION_BG = "\x1b[48;2;40;52;74m";
 
@@ -123,11 +145,19 @@ function loadState(): void {
   const advanced = seq !== state.lastSeq;
   state.lastSeq = seq;
 
-  state.rows = step ? buildContentRows(step, listReplies(), cols()) : [{ ansi: dim("Waiting for Claude to present a step…") }];
+  state.rows = step ? buildContentRows(step, listReplies(), cols(), state.pending) : [{ ansi: dim("Waiting for the agent to present a step…") }];
 
   if (advanced) {
+    // The agent moved on — clear the working state and any leftover drafts.
     state.scroll = 0;
     state.commentTarget = null;
+    state.dragging = false;
+    if (state.working) {
+      state.working = false;
+      stopSpinner();
+      state.pending = [];
+      state.status = "";
+    }
   } else {
     state.scroll = Math.min(state.scroll, maxScroll());
   }
@@ -175,6 +205,16 @@ function header(c: number): string[] {
 }
 
 function footer(c: number): { lines: string[]; caretCol: number } {
+  if (state.working) {
+    const top = dim(fillRule("╭─ sent ", c - 1) + "╮");
+    const label = `${SPINNER[state.spinFrame]} Agent is reviewing your comments…`;
+    const inner = Math.max(0, c - 4); // "│ " … " │"
+    const clipped = label.length > inner ? label.slice(0, inner) : label;
+    const pad = " ".repeat(Math.max(0, inner - clipped.length));
+    const mid = dim("│") + " " + accent(clipped.slice(0, 1)) + clipped.slice(1) + pad + " " + dim("│");
+    const bottom = dim(fillRule("╰─ waiting for the next step ", c - 1) + "╯");
+    return { lines: [top + CLEAR_EOL, mid + CLEAR_EOL, bottom + CLEAR_EOL], caretCol: 1 };
+  }
   const target = state.commentTarget;
   const topLabel = target ? ` commenting on ${targetLabel(target)} ` : ` comment `;
   const top = target
@@ -189,9 +229,10 @@ function footer(c: number): { lines: string[]; caretCol: number } {
   const inputLine = dim("│") + " " + accent("›") + " " + shown + " ".repeat(padLen) + " " + dim("│");
   const caretCol = 1 + 1 + 1 + 1 + shown.length + 1; // │, space, ›, space, text → 1-based
 
+  const staged = state.pending.length ? `${state.pending.length} staged · ` : "";
   const hint = state.status
     ? ` ${state.status} `
-    : " Enter send · click a line to comment · ↑↓/wheel scroll · Ctrl-C quit ";
+    : ` ${staged}click a line to comment · Enter to send · ↑↓/wheel scroll · Ctrl-C quit `;
   const bottom = dim(fillRule("╰─" + truncateVisible(hint, c - 4), c - 1) + "╯");
 
   return { lines: [top + CLEAR_EOL, inputLine + CLEAR_EOL, bottom + CLEAR_EOL], caretCol };
@@ -269,28 +310,57 @@ function handleMouse(b: number, y: number, final: "M" | "m"): void {
   }
 }
 
+/** Enter with a line targeted stages a comment; Enter with no target completes
+ * the step, sending the note plus every staged comment as one submission. */
 function submit(): void {
+  if (state.working) return;
   const text = state.input.trim();
   const target = state.commentTarget;
-  const stepId = state.step?.id ?? null;
 
   if (target) {
-    if (!text) return; // a line comment needs text
-    writeReply(text, { stepId, source: "pane", anchor: target });
-    if (stepId) {
-      const body = target.endLine && target.endLine > target.line ? `(lines ${target.line}–${target.endLine}) ${text}` : text;
-      addCommentToStep(stepId, { file: target.file, line: target.line, side: target.side, body });
+    if (!text) {
+      // Empty Enter cancels the line selection.
+      state.commentTarget = null;
+      state.dragging = false;
+      state.status = "";
+      return;
     }
-    state.status = "✓ comment sent to Claude";
+    // Replace any earlier draft on the same line, then stage this one.
+    state.pending = state.pending.filter((p) => !(p.file === target.file && p.side === target.side && p.line === target.line));
+    state.pending.push({ file: target.file, line: target.line, side: target.side, ...(target.endLine ? { endLine: target.endLine } : {}), text });
     state.commentTarget = null;
     state.dragging = false;
-  } else {
-    const body = text || "👍 Looks good — continue.";
-    writeReply(body, { stepId, source: "pane" });
-    state.status = "✓ sent to Claude";
+    state.input = "";
+    state.status = `staged ${state.pending.length} comment(s) — Enter to send, or click another line`;
+    loadState();
+    return;
   }
+
+  complete(text);
+}
+
+/** Send the note plus all staged comments, then wait (working) for the agent. */
+function complete(message: string): void {
+  const stepId = state.step?.id ?? null;
+  if (!message && state.pending.length === 0) {
+    writeReply("👍 Looks good — continue.", { stepId, source: "pane" });
+  } else {
+    if (stepId) {
+      for (const c of state.pending) {
+        const body = c.endLine && c.endLine > c.line ? `(lines ${c.line}–${c.endLine}) ${c.text}` : c.text;
+        addCommentToStep(stepId, { file: c.file, line: c.line, side: c.side, body });
+      }
+    }
+    writeReply(message, { stepId, source: "pane", comments: state.pending });
+  }
+  state.working = true;
+  state.workingSeq = state.focus?.seq ?? 0;
+  state.pending = [];
   state.input = "";
-  loadState(); // reflect the new inline comment / thread immediately
+  state.commentTarget = null;
+  state.dragging = false;
+  startSpinner();
+  loadState();
 }
 
 function handleData(buf: string): void {
@@ -341,11 +411,11 @@ function handleData(buf: string): void {
       continue;
     }
     if (ch === "\x7f" || ch === "\b") {
-      state.input = state.input.slice(0, -1);
+      if (!state.working) state.input = state.input.slice(0, -1);
       i += 1;
       continue;
     }
-    if (buf.charCodeAt(i) >= 0x20) state.input += ch;
+    if (buf.charCodeAt(i) >= 0x20 && !state.working) state.input += ch;
     i += 1;
   }
   render();
@@ -356,6 +426,7 @@ let torn = false;
 function teardown(): void {
   if (torn) return;
   torn = true;
+  stopSpinner();
   try {
     if (stdin.isTTY) stdin.setRawMode(false);
   } catch {

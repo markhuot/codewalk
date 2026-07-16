@@ -51,6 +51,9 @@ function passthroughEnv(): Record<string, string> {
   // process; CODEWALK_COLOR forces our own renderers on.
   const env: Record<string, string> = { CODEWALK_COLOR: "1", FORCE_COLOR: "3" };
   if (process.env.CODEWALK_DIR) env.CODEWALK_DIR = process.env.CODEWALK_DIR;
+  // Carry the light/dark hint into the reviewer pane so its bands match.
+  if (process.env.CODEWALK_THEME) env.CODEWALK_THEME = process.env.CODEWALK_THEME;
+  if (process.env.COLORFGBG) env.COLORFGBG = process.env.COLORFGBG;
   return env;
 }
 

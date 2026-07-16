@@ -83,6 +83,19 @@ describe("click-to-comment", () => {
     expect(r?.anchor).toEqual({ file: "a.ts", line: 3, side: "old" });
   });
 
+  test("a submission carries an overall message plus staged line comments", async () => {
+    const s = await store();
+    const comments = [
+      { file: "a.ts", line: 10, side: "new" as const, text: "first" },
+      { file: "a.ts", line: 20, endLine: 24, side: "new" as const, text: "range one" },
+    ];
+    s.writeReply("looks good overall", { stepId: "diff-1", source: "web", comments });
+    const r = await s.awaitReply(1000);
+    expect(r?.text).toBe("looks good overall");
+    expect(r?.comments).toHaveLength(2);
+    expect(r?.comments?.[1]).toMatchObject({ line: 20, endLine: 24, text: "range one" });
+  });
+
   test("addCommentToStep appends an inline comment to a diff step", async () => {
     const s = await store();
     const walk = s.createWalk("t");

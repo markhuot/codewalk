@@ -86,15 +86,15 @@ const boldGreen = (s: string) => (useColor ? `\x1b[1;32m${s}\x1b[0m` : s);
  * surrounding tool chatter.
  */
 function printReply(reply: Reply): void {
-  const a = reply.anchor;
-  const on = a
-    ? ` on ${a.file}:${a.line}${a.endLine && a.endLine > a.line ? `–${a.endLine}` : ""}`
-    : reply.stepId
-      ? ` on ${reply.stepId}`
-      : "";
+  const on = reply.stepId ? ` on ${reply.stepId}` : "";
   console.log("");
   console.log(boldGreen(`╭─ reply from ${reply.source}${on} ` + "─".repeat(Math.max(0, 40 - reply.source.length))));
-  for (const line of reply.text.split("\n")) console.log(boldGreen("│ ") + line);
+  if (reply.text) for (const line of reply.text.split("\n")) console.log(boldGreen("│ ") + line);
+  const comments = reply.comments ?? (reply.anchor ? [{ ...reply.anchor, text: reply.text }] : []);
+  for (const c of comments) {
+    const range = c.endLine && c.endLine > c.line ? `–${c.endLine}` : "";
+    console.log(boldGreen("│ ") + dim(`${c.file}:${c.line}${range}`) + `  ${c.text}`);
+  }
   console.log(boldGreen("╰" + "─".repeat(52)));
   console.log("");
 }

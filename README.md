@@ -32,7 +32,7 @@ walk present          # opens a reviewer pane, blocks, prints the human's reply
 `walk present --render <target>`:
 
 - **`pane`** (default inside a multiplexer) — splits a pane beside you and blocks for a typed comment. Works in [herdr](https://herdr.dev) and tmux via pluggable pane drivers (`src/panes/`).
-- **`web`** — a live browser view with a "Send to Claude" composer. Add `--open` to open it.
+- **`web`** — a live browser view: click any line to stage a comment, then **Complete step** to send them together. Add `--open` to open it.
 - **`cli`** — a rich inline diff printed to the terminal; the reply is just the human's next message (no blocking).
 
 The reviewer is turn-based: comment on the change on screen, and it advances when the agent presents the next step.

@@ -1,6 +1,6 @@
 import { mkdirSync, existsSync, readFileSync, writeFileSync, readdirSync, watch } from "node:fs";
 import { join } from "node:path";
-import type { Comment, Focus, LineAnchor, Reply, ReplySource, Step, Walk } from "./types.ts";
+import type { Comment, Focus, LineAnchor, LineComment, Reply, ReplySource, Step, Walk } from "./types.ts";
 
 /** Root directory for walk state. Override with CODEWALK_DIR. */
 export function stateDir(): string {
@@ -113,7 +113,7 @@ function replyKey(r: Reply): string {
 
 export function writeReply(
   text: string,
-  opts: { stepId?: string | null; source?: ReplySource; anchor?: LineAnchor } = {},
+  opts: { stepId?: string | null; source?: ReplySource; anchor?: LineAnchor; comments?: LineComment[] } = {},
 ): Reply {
   ensureDir();
   const dir = repliesDir();
@@ -125,6 +125,7 @@ export function writeReply(
     text,
     source: opts.source ?? "cli",
     ...(opts.anchor ? { anchor: opts.anchor } : {}),
+    ...(opts.comments && opts.comments.length ? { comments: opts.comments } : {}),
   };
   // Filename is sortable by time so directory order matches chronological order.
   const stamp = reply.at.replace(/[:.]/g, "-");

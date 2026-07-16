@@ -1,5 +1,6 @@
 import type { Comment, DiffFile, Reply, Step, Walk } from "../types.ts";
 import { highlightLine, langFor } from "./highlight.ts";
+import { bandColors } from "./theme.ts";
 
 // ANSI helpers. Color is on when stdout is a TTY, or forced via FORCE_COLOR /
 // CODEWALK_COLOR (the reviewer pane sets this so a spawned process still gets
@@ -18,13 +19,8 @@ const cyan = (s: string) => sgr("36", s);
 const yellow = (s: string) => sgr("33", s);
 const blue = (s: string) => sgr("34", s);
 
-// Truecolor line fills mirroring GitHub's dark diff palette. Syntax colors sit
-// on top of the background band (they only touch the foreground), and the
-// marker keeps its own tint.
-const ADD_BG = "\x1b[48;2;18;38;30m";
-const DEL_BG = "\x1b[48;2;42;22;27m";
-const ADD_MARK = "\x1b[38;2;87;171;90m";
-const DEL_MARK = "\x1b[38;2;229;115;115m";
+// Truecolor line fills (theme-aware). Syntax colors sit on top of the background
+// band (they only touch the foreground), and the marker keeps its own tint.
 const RESET = "\x1b[0m";
 
 /** A code line laid over a background band, with a tinted marker and highlighted body. */
@@ -80,6 +76,7 @@ function renderFile(file: DiffFile, comments: Comment[], width: number): string 
   const gutterCols = wide ? 11 : 6; // "OOOO NNNN " vs "NNNN "
   const contentBudget = Math.max(12, width - gutterCols - 2); // 2 = marker + space
   const lang = langFor(file.newPath || file.oldPath);
+  const bc = bandColors();
 
   const fileComments = comments.filter((x) => x.file === file.newPath || x.file === file.oldPath);
   for (const hunk of file.hunks) {
@@ -90,8 +87,8 @@ function renderFile(file: DiffFile, comments: Comment[], width: number): string 
       const newN = String(l.newNumber ?? "").padStart(4, " ");
       const gutter = dim(wide ? `${oldN} ${newN} ` : `${newN} `);
       const body = clip(l.content, contentBudget);
-      if (l.type === "add") out.push(gutter + band(ADD_BG, ADD_MARK, "+", body, lang));
-      else if (l.type === "del") out.push(gutter + band(DEL_BG, DEL_MARK, "-", body, lang));
+      if (l.type === "add") out.push(gutter + band(bc.addBg, bc.addMark, "+", body, lang));
+      else if (l.type === "del") out.push(gutter + band(bc.delBg, bc.delMark, "-", body, lang));
       else out.push(gutter + dim("  ") + (useColor ? highlightLine(body, lang) : body));
       for (const cm of commentsFor(fileComments, "old", l.oldNumber)) out.push(renderComment(cm, width));
       for (const cm of commentsFor(fileComments, "new", l.newNumber)) out.push(renderComment(cm, width));

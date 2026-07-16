@@ -52,6 +52,11 @@ export interface LineAnchor {
   endLine?: number;
 }
 
+/** A staged line comment: an anchor plus the text left on it. */
+export interface LineComment extends LineAnchor {
+  text: string;
+}
+
 export interface ProseStep {
   kind: "prose";
   id: string;
@@ -84,15 +89,24 @@ export type ReplySource = "pane" | "web" | "cli";
  * (`.codewalk/replies/`) regardless of render target, and a blocking
  * `walk await` pipes the next unconsumed one back into the conversation.
  */
+/**
+ * One submission from the human: an overall message plus any line comments they
+ * staged before completing the step. Sending is atomic — the reader stages as
+ * many comments as they like, then completes the step, producing a single Reply
+ * the agent consumes in one turn.
+ */
 export interface Reply {
   id: string;
   at: string;
   /** The step the user was looking at when they replied (best-effort). */
   stepId: string | null;
+  /** The overall message ("" when the submission is only line comments). */
   text: string;
   source: ReplySource;
   /** Set when the reply was left on a specific diff line (click-to-comment). */
   anchor?: LineAnchor;
+  /** Line comments staged during this step and submitted together. */
+  comments?: LineComment[];
 }
 
 /**
