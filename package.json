@@ -1,0 +1,24 @@
+{
+  "name": "codewalk",
+  "version": "0.1.0",
+  "description": "A CLI that lets an LLM narrate a walk through a PR / branch / code change with rendered inline diffs.",
+  "type": "module",
+  "bin": {
+    "walk": "./src/cli.ts"
+  },
+  "scripts": {
+    "walk": "bun run src/cli.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "marked": "^12.0.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.5.0"
+  },
+  "engines": {
+    "bun": ">=1.1.0"
+  }
+}
