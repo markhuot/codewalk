@@ -14,7 +14,7 @@ import {
   setServerInfo,
   stateDir,
 } from "./store.ts";
-import { inHerdr, paneExists, runInPane, splitPane, renamePane } from "./herdr.ts";
+import { activeDriver, type PaneDriver } from "./panes/index.ts";
 import type { Reply, Step } from "./types.ts";
 
 export type RenderTarget = "cli" | "pane" | "web";
@@ -54,44 +54,58 @@ function passthroughEnv(): Record<string, string> {
   return env;
 }
 
-/** Ensure a reviewer pane exists and is running the reviewer loop. */
-function ensurePane(): string {
+/** The reviewer command with its environment folded in as a shell prefix, so it
+ * runs the same way through any driver (herdr `pane run`, tmux `send-keys`, …). */
+function reviewerCommand(): string {
+  const env = Object.entries(passthroughEnv())
+    .map(([k, v]) => `${k}=${shquote(v)}`)
+    .join(" ");
+  const { cmd, argv } = selfArgv(["pane"]);
+  const bin = [cmd, ...argv].map(shquote).join(" ");
+  return env ? `${env} ${bin}` : bin;
+}
+
+/** Ensure a reviewer pane exists (via the active driver) and is running. */
+function ensurePane(driver: PaneDriver): string {
   // Already have a live reviewer in a live pane? Nothing to do — it will pick
   // up the focus bump on its own.
   const existing = getPaneId();
-  if (existing && paneExists(existing) && reviewerAlive()) return existing;
+  if (existing && driver.exists(existing) && reviewerAlive()) return existing;
 
   // Reuse the pane if it's still open; otherwise split a fresh one.
-  let paneId = existing && paneExists(existing) ? existing : null;
+  let paneId = existing && driver.exists(existing) ? existing : null;
   if (!paneId) {
-    const info = splitPane({
-      direction: "right",
-      ratio: 0.5,
-      cwd: process.cwd(),
-      env: passthroughEnv(),
-      focus: false,
-    });
-    paneId = info.pane_id;
+    paneId = driver.split({ direction: "right", ratio: 0.5, cwd: process.cwd(), focus: false });
     setPaneId(paneId);
     try {
-      renamePane(paneId, "codewalk review");
+      driver.rename(paneId, "codewalk review");
     } catch {
       /* cosmetic */
     }
   }
 
-  const { cmd, argv } = selfArgv(["pane"]);
-  runInPane(paneId, [cmd, ...argv].map(shquote).join(" "));
+  driver.run(paneId, reviewerCommand());
   return paneId;
 }
 
-/** Ping the server's port; true if something answers. */
-async function serverResponds(port: number): Promise<boolean> {
+/** Ask the port who it is. Returns the codewalk server's pid, or null if the
+ * thing on the port isn't our server (or nothing answers). */
+async function serverIdentity(port: number): Promise<number | null> {
   try {
-    const res = await fetch(`http://localhost:${port}/api/walk`, {
-      signal: AbortSignal.timeout(500),
-    });
-    return res.ok || res.status === 200;
+    const res = await fetch(`http://localhost:${port}/api/health`, { signal: AbortSignal.timeout(500) });
+    if (!res.ok) return null;
+    const body = (await res.json()) as { codewalk?: boolean; pid?: number };
+    return body.codewalk ? body.pid ?? 0 : null;
+  } catch {
+    return null;
+  }
+}
+
+function pidAlive(pid: number): boolean {
+  if (!pid) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
   } catch {
     return false;
   }
@@ -99,29 +113,39 @@ async function serverResponds(port: number): Promise<boolean> {
 
 async function ensureServer(port: number, open: boolean): Promise<string> {
   const url = `http://localhost:${port}`;
+
+  // Reuse only a server we started that's still alive and answering.
   const info = getServerInfo();
-  const alive = info && (await serverResponds(info.port));
-  if (alive) {
-    if (open) openBrowser(`http://localhost:${info!.port}`);
-    return `http://localhost:${info!.port}`;
+  if (info && pidAlive(info.pid) && (await serverIdentity(info.port)) != null) {
+    if (open) openBrowser(`http://localhost:${info.port}`);
+    return `http://localhost:${info.port}`;
+  }
+
+  // If something else already holds the port, don't silently reuse it — a stale
+  // or unrelated server would serve the wrong thing. Say so plainly.
+  const squatter = await serverIdentity(port);
+  if (squatter != null && !(info && squatter === info.pid)) {
+    throw new Error(`port ${port} is already serving another codewalk (pid ${squatter}). Run \`walk stop\`, or pass --port.`);
+  }
+  if (squatter == null && (await fetch(url, { signal: AbortSignal.timeout(400) }).then(() => true).catch(() => false))) {
+    throw new Error(`port ${port} is in use by another process. Pass --port to pick a free one.`);
   }
 
   const { cmd, argv } = selfArgv(["serve", "--port", String(port)]);
-  const child = spawn(cmd, argv, {
-    detached: true,
-    stdio: "ignore",
-    env: { ...process.env, ...passthroughEnv() },
-  });
+  const child = spawn(cmd, argv, { detached: true, stdio: "ignore", env: { ...process.env, ...passthroughEnv() } });
   child.unref();
-  setServerInfo({ port, pid: child.pid ?? 0 });
 
-  // Wait for it to accept connections before we tell the browser to load.
+  // Wait for our server to answer, and confirm it's actually the one we spawned.
   for (let i = 0; i < 40; i++) {
-    if (await serverResponds(port)) break;
+    const pid = await serverIdentity(port);
+    if (pid != null && (child.pid == null || pid === child.pid)) {
+      setServerInfo({ port, pid });
+      if (open) openBrowser(url);
+      return url;
+    }
     await new Promise((r) => setTimeout(r, 100));
   }
-  if (open) openBrowser(url);
-  return url;
+  throw new Error(`server on port ${port} did not come up. Check for errors or pass a different --port.`);
 }
 
 function openBrowser(url: string): void {
@@ -150,16 +174,17 @@ export async function present(opts: PresentOptions): Promise<PresentResult> {
   }
 
   if (opts.render === "pane") {
-    if (!inHerdr()) {
+    const driver = activeDriver();
+    if (!driver) {
       return {
         render: "pane",
         step,
         reply: null,
         timedOut: false,
-        note: "Not inside a herdr session — use --render=web or --render=cli.",
+        note: "No supported multiplexer detected (herdr or tmux) — use --render=web or --render=cli.",
       };
     }
-    ensurePane();
+    ensurePane(driver);
   } else if (opts.render === "web") {
     await ensureServer(opts.port, opts.open);
   }

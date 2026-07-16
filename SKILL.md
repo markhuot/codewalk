@@ -18,10 +18,10 @@ The binary is `walk`. During development run it as `bun run <repo>/src/cli.ts <a
    ```
    walk start "PR #17: streaming diff narration"
    ```
-3. **Build a step** — a bit of prose plus the diff that proves it. Keep each step to one or two files:
+3. **Build a step** — narration and the diff that proves it, together in one step. The prose rides in `--note`; every step shows code. Keep each to one or two files:
    ```
-   walk say "This makes **live** diff narration possible. Here's the interface a caller uses:"
    walk diff --pr 17 --files src/walk.ts --title "The new interface" \
+        --note "This makes **live** diff narration possible. Here's the interface a caller uses." \
         --comment "src/walk.ts:42:this gate short-circuits when there's no TTY"
    ```
 4. **Present it and wait for a reply.** This is the heart of the tool — it blocks and prints the human's comment:
@@ -38,9 +38,9 @@ The binary is `walk`. During development run it as `bun run <repo>/src/cli.ts <a
 
 | Target | What happens | When |
 |---|---|---|
-| `pane` | Splits a herdr pane beside you, renders the step, and blocks for a typed comment. **Default inside herdr.** | You're in a herdr session (the usual case). |
-| `web` | Starts the live browser view; the human types in a composer and clicks "Send to Claude". Add `--open` to open the browser. | No herdr, or the human prefers a browser. |
-| `cli` | Prints a rich inline diff to stdout. Does **not** block — the reply is simply the human's next chat message. **Default outside herdr.** | You can't open a pane or browser (e.g. running headless inside another tool). |
+| `pane` | Splits a pane beside you (herdr or tmux), renders the step, and blocks for a typed comment. **Default inside a multiplexer.** | You're in a herdr or tmux session (the usual case). |
+| `web` | Starts the live browser view; the human types in a composer and clicks "Send to Claude". Add `--open` to open the browser. | No multiplexer, or the human prefers a browser. |
+| `cli` | Prints a rich inline diff to stdout. Does **not** block — the reply is simply the human's next chat message. **Default with no multiplexer.** | You can't open a pane or browser (e.g. running headless inside another tool). |
 
 Other flags: `--no-wait` (present without blocking), `--timeout <sec>` (give up waiting and return control), `--port <n>` (web port, default 4599).
 
@@ -72,7 +72,9 @@ Decorate a diff step with `--title`, `--note "<markdown>"`, and repeatable `--co
 
 ## Shape of a good step: text-first, code-light
 
-**Lead with prose, then show a small diff.** Each step should be a paragraph or two of context followed by roughly **15–20 lines of code** — the specific lines that make the point. The narration is the walk; the diff is evidence for it.
+**Every step must show code or a concrete example — never prose alone.** A step is narration *plus* the diff that proves it, shown together. Put the context in the diff step's `--note` (and point at lines with `--comment`); don't create a standalone `walk say` step for an intro, a transition, or a summary. A step with no code on screen reads as empty and confusing — there is nothing for the reader to look at or react to. If you have something to say, attach it to the code it's about.
+
+**Lead with prose, then show a small diff.** Within a step, open with a paragraph or two of context (`--note`), then roughly **15–20 lines of code** — the specific lines that make the point. The narration frames the walk; the diff is the evidence, and it's always present.
 
 If a step shows more than ~20 lines of code, assume the human will not read all of it, and treat that as a signal to either split the step or narrate what to look for. When a change is genuinely large, say so and point at the two or three lines that matter rather than dumping the whole thing.
 
@@ -82,9 +84,24 @@ Levers for keeping diffs small:
 - Pre-slice with `--stdin` when you want an exact hunk: `git diff main -- src/foo.ts | <select the lines> | walk diff --stdin`.
 - Split a big file across several steps, each narrating one region.
 
-## Style for narration (the `say` and `--note` text)
+## Style for narration (the `--note` and `--comment` text)
 
 The voice of a senior engineer giving a tour: lead with what the change enables, then point at the specific code. Short paragraphs, markdown welcome (bold, `code`, lists, blockquotes). Don't restate the diff line by line — it's already on screen. Explain the *why* and the non-obvious, and end steps in a way that invites a reaction ("does this hold up for the streaming case?").
+
+(`walk say` still exists, but it creates a prose-only step with no code — avoid it in a walk. Narration belongs in a diff step's `--note`.)
+
+## You pace the walk, and you can change it as you go
+
+The reviewer (pane or browser) shows **one step at a time** — the step you last presented. The reader can't skip ahead, so the walk moves at your pace: present a step, read the reaction, then present the next. Advance only when you're ready.
+
+The walk is not frozen once it starts. Revise it freely in response to what the human says:
+- They want less: add a tighter step (a smaller `--files` scope or `--context 0`) and present that instead.
+- They're confused: `walk say` a clarification, or `walk comment` the exact line, then present it.
+- They ask about something you haven't shown: build the relevant diff step now and present it, even if it wasn't in your original plan.
+- They correct you: acknowledge it, add a follow-up step with the right framing, and move on.
+- Re-present an earlier step any time with `walk present --step <id>` to revisit it.
+
+Because only the focused step is shown, extra or superseded steps don't clutter the reader's view — so don't hesitate to insert, re-scope, or reorder as the conversation goes. A walk is a conversation, not a script you read start to finish.
 
 ## Presenting: call it inline, not in the background
 

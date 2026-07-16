@@ -93,7 +93,24 @@ function renderStepInner(step: Step): string {
   return `${title}${note}${files}`;
 }
 
-/** Render just the walk body (used for live-updating the browser view). */
+function stepSection(step: Step, replies: Reply[]): string {
+  const kind = step.kind === "prose" ? "step-prose" : "step-diff";
+  const thread = renderThread(replies.filter((r) => r.stepId === step.id));
+  return `<section class="step ${kind}" id="step-${esc(step.id)}" data-step-id="${esc(step.id)}">` +
+    `${renderStepInner(step)}${thread}</section>`;
+}
+
+function progressDots(total: number, current: number): string {
+  let dots = "";
+  for (let i = 0; i < total; i++) dots += `<span class="dot${i <= current ? " on" : ""}"></span>`;
+  return `<span class="dots">${dots}</span>`;
+}
+
+/**
+ * The live browser fragment. Shows only the step the agent is currently
+ * presenting (paced by the agent, so the reader can't jump ahead), with a
+ * progress indicator. The static/standalone render shows the whole walk.
+ */
 export function renderFragment(
   walk: Walk | null,
   ctx: { focus?: Focus | null; replies?: Reply[] } = {},
@@ -101,22 +118,31 @@ export function renderFragment(
   if (!walk) {
     return `<div class="empty">No active walk yet. Run <code>walk start "&lt;title&gt;"</code>.</div>`;
   }
-  const focusId = ctx.focus?.stepId ?? null;
   const replies = ctx.replies ?? [];
+  const focusId = ctx.focus?.stepId ?? null;
+  const total = walk.steps.length;
+  const idx = focusId ? walk.steps.findIndex((s) => s.id === focusId) : -1;
+  const step = idx >= 0 ? walk.steps[idx] : null;
 
-  const steps = walk.steps.map((step) => {
-    const kind = step.kind === "prose" ? "step-prose" : "step-diff";
-    const focused = step.id === focusId ? " focused" : "";
-    const thread = renderThread(replies.filter((r) => r.stepId === step.id));
-    return `<section class="step ${kind}${focused}" id="step-${esc(step.id)}" data-step-id="${esc(step.id)}">` +
-      `${renderStepInner(step)}${thread}</section>`;
-  });
+  const marker = `<div id="focus-marker" data-step-id="${esc(step ? step.id : "")}" hidden></div>`;
+  const header =
+    `<header class="walk-header"><div class="walk-eyebrow">${esc(walk.title)}</div>` +
+    (step ? `<div class="walk-progress">${progressDots(total, idx)}<span class="step-count">Step ${idx + 1} of ${total}</span></div>` : "") +
+    `</header>`;
 
-  const body = steps.length
-    ? steps.join("")
+  if (!step) {
+    const msg = total ? "Waiting for the next step…" : "This walk has no steps yet.";
+    return `${marker}${header}<div class="empty">${msg}</div>`;
+  }
+  return `${marker}${header}${stepSection(step, replies)}`;
+}
+
+/** The whole walk body, all steps (used by the standalone static render). */
+function renderAllSteps(walk: Walk, replies: Reply[]): string {
+  const marker = `<div id="focus-marker" data-step-id="" hidden></div>`;
+  const body = walk.steps.length
+    ? walk.steps.map((s) => stepSection(s, replies)).join("")
     : `<div class="empty">This walk has no steps yet.</div>`;
-  // A marker the composer reads to know which step a browser reply belongs to.
-  const marker = `<div id="focus-marker" data-step-id="${esc(focusId ?? "")}" hidden></div>`;
   return `${marker}<header class="walk-header"><h1>${esc(walk.title)}</h1></header>${body}`;
 }
 
@@ -153,7 +179,7 @@ export function renderStandalone(walk: Walk, ctx: { replies?: Reply[] } = {}): s
 <style>${PAGE_STYLES}</style>
 </head>
 <body>
-<main id="walk">${renderFragment(walk, { replies: ctx.replies })}</main>
+<main id="walk">${renderAllSteps(walk, ctx.replies ?? [])}</main>
 </body>
 </html>`;
 }
@@ -196,6 +222,12 @@ body {
 }
 main { max-width: 980px; margin: 0 auto; padding: 24px 20px 140px; }
 .walk-header h1 { font-size: 26px; margin: 4px 0 24px; letter-spacing: -0.01em; }
+.walk-eyebrow { font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin: 2px 0 10px; }
+.walk-progress { display: flex; align-items: center; gap: 12px; margin: 0 0 24px; }
+.walk-progress .dots { display: inline-flex; gap: 6px; }
+.walk-progress .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--border); transition: background .2s; }
+.walk-progress .dot.on { background: var(--accent); }
+.walk-progress .step-count { font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .step { margin: 0 0 28px; scroll-margin-top: 16px; border-radius: 10px; transition: box-shadow .2s, background .2s; }
 .step.focused { background: color-mix(in srgb, var(--accent) 7%, transparent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent); padding: 16px; margin-left: -16px; margin-right: -16px; }
 .step-prose { font-size: 16px; }
@@ -283,13 +315,6 @@ function syncComposer() {
   composer.hidden = !id;
 }
 
-function scrollToFocus(force) {
-  const id = currentFocusId();
-  if (!id) return;
-  const el = document.getElementById('step-' + id);
-  if (el) el.scrollIntoView({ behavior: firstLoad || force ? 'auto' : 'smooth', block: 'start' });
-}
-
 async function refresh() {
   try {
     const res = await fetch('/fragment', { cache: 'no-store' });
@@ -299,7 +324,9 @@ async function refresh() {
     walkEl.innerHTML = html;
     syncComposer();
     const newFocus = currentFocusId();
-    if (newFocus && newFocus !== prevFocus) scrollToFocus(false);
+    // Advancing to a new step returns to the top; staying on the same step
+    // (e.g. a reply was added) preserves the reader's scroll position.
+    if (newFocus && newFocus !== prevFocus) window.scrollTo({ top: 0, behavior: firstLoad ? 'auto' : 'smooth' });
     else window.scrollTo(0, y);
     firstLoad = false;
   } catch (e) { /* keep last render on transient failure */ }

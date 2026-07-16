@@ -31,7 +31,7 @@ walk present          # opens a reviewer pane, blocks, prints the human's reply
 
 `walk present --render <target>`:
 
-- **`pane`** (default inside [herdr](https://herdr.dev)) — splits a pane beside you, renders the diff, and blocks for a typed comment.
+- **`pane`** (default inside a multiplexer) — splits a pane beside you and blocks for a typed comment. Works in [herdr](https://herdr.dev) and tmux via pluggable pane drivers (`src/panes/`).
 - **`web`** — a live browser view with a "Send to Claude" composer. Add `--open` to open it.
 - **`cli`** — a rich inline diff printed to the terminal; the reply is just the human's next message (no blocking).
 
@@ -55,7 +55,7 @@ Decorate a diff step: `--title`, `--note "<markdown>"`, and repeatable `--commen
 - **Parser** (`src/diff/parse.ts`) turns a unified diff into a structured model (files, hunks, per-line old/new numbers, add/delete counts, rename/binary detection).
 - **Store** (`src/store.ts`) persists a *walk* as JSON under `.codewalk/`, plus a **reply inbox**, a reply cursor, and a **focus pointer** whose sequence bumps on every present.
 - **The reply inbox** is the spine of the conversation. Every render target — pane, browser, cli — writes the human's comments into `.codewalk/replies/`, and a blocking `walk await` returns the next unconsumed one. That's how a comment from any surface flows back into the agent's turn.
-- **herdr wrapper** (`src/herdr.ts`) drives panes over the herdr socket API: split, run, read, close.
+- **Pane drivers** (`src/panes/`) abstract the terminal multiplexer behind a `PaneDriver` interface (split, run, read, close). herdr and tmux ship today; adding another (cmux, kitty, wezterm) is one file plus a registry entry. `activeDriver()` picks by environment.
 - **Reviewer** (`src/pane.ts`) is the interactive terminal UI that runs inside a pane: it renders the focused step, prompts for a comment, and waits for the agent to advance.
 - **Server** (`src/server.ts`) serves the browser view, pushes live updates over SSE, and accepts replies at `POST /api/reply`.
 - **Renderers** produce a GitHub-style HTML view (`src/render/html.ts`, light/dark aware, inline comments, reply threads, composer) and a width-aware ANSI/plain terminal view (`src/render/terminal.ts`).

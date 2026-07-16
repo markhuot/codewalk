@@ -24,7 +24,7 @@ import { renderStandalone } from "./render/html.ts";
 import { serve } from "./server.ts";
 import { present, type RenderTarget } from "./present.ts";
 import { runReviewer } from "./pane.ts";
-import { closePane, inHerdr } from "./herdr.ts";
+import { activeDriver } from "./panes/index.ts";
 import type { Comment, DiffStep, Reply } from "./types.ts";
 
 const HELP = `codewalk — a narrated, back-and-forth walk through a PR / branch / code change.
@@ -257,7 +257,7 @@ async function main() {
         allowPositionals: true,
       });
 
-      const raw = (values.render as string | undefined) ?? (inHerdr() ? "pane" : "cli");
+      const raw = (values.render as string | undefined) ?? (activeDriver() ? "pane" : "cli");
       const render: RenderTarget = raw === "webpage" ? "web" : (raw as RenderTarget);
       if (!["cli", "pane", "web"].includes(render)) {
         throw new Error(`--render must be pane, web, or cli (got "${raw}")`);
@@ -333,7 +333,7 @@ async function main() {
       const paneId = getPaneId();
       if (paneId) {
         try {
-          closePane(paneId);
+          activeDriver()?.close(paneId);
         } catch {
           /* pane may already be gone */
         }

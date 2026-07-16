@@ -63,6 +63,12 @@ export function serve(port: number): { port: number; stop: () => void } {
         });
       }
 
+      // Identity endpoint so a launcher can tell *our* server apart from some
+      // unrelated process that happens to hold the port.
+      if (url.pathname === "/api/health") {
+        return Response.json({ codewalk: true, pid: process.pid });
+      }
+
       if (url.pathname === "/api/walk") {
         return Response.json(activeWalk());
       }
