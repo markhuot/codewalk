@@ -4,27 +4,35 @@ import { parseUnifiedDiff } from "./diff/parse.ts";
 import { resolveDiff } from "./diff/sources.ts";
 import {
   addStep,
+  awaitReply,
+  clearServerInfo,
   createWalk,
   currentId,
+  getPaneId,
+  getServerInfo,
+  listReplies,
   listWalks,
   loadCurrent,
   loadWalk,
   nextStepId,
   saveWalk,
   setCurrent,
+  writeReply,
 } from "./store.ts";
-import { renderTerminal } from "./render/terminal.ts";
+import { renderStep, renderTerminal } from "./render/terminal.ts";
 import { renderStandalone } from "./render/html.ts";
 import { serve } from "./server.ts";
-import type { Comment, DiffStep } from "./types.ts";
+import { present, type RenderTarget } from "./present.ts";
+import { runReviewer } from "./pane.ts";
+import { closePane, inHerdr } from "./herdr.ts";
+import type { Comment, DiffStep, Reply } from "./types.ts";
 
-const HELP = `codewalk — narrate a walk through a PR / branch / code change.
+const HELP = `codewalk — a narrated, back-and-forth walk through a PR / branch / code change.
 
 Usage: walk <command> [options]
 
-Commands:
+Build a walk:
   start <title>              Begin a new walk (becomes the active walk).
-  serve [--port <n>]         Open the live browser view (run in its own pane).
   say <markdown...>          Add a prose/narration step.
   diff [source] [options]    Add a rendered diff step. Sources:
        --pr <n>                a GitHub PR, via \`gh pr diff\`
@@ -36,22 +44,60 @@ Commands:
        --title <text>          heading shown above the diff
        --note <markdown>       narration shown above the diff
        --comment <path:line:msg>   inline comment (repeatable; :line optional)
+       --context <n>           lines of context around each change (git -U, default 3)
   comment <path> <line> <msg>  Attach an inline comment to the latest diff step.
        [--side old|new] [--step <id>]
+
+Present + converse (the main loop):
+  present [--render pane|web|cli]   Put the latest step on stage and BLOCK until
+       [--step <id>] [--no-wait]      the human replies. The reply is printed to
+       [--timeout <sec>] [--port <n>] stdout so it flows back into the conversation.
+       [--open]                       Default target: pane inside herdr, else cli.
+  await [--timeout <sec>]     Block for the next reply without presenting.
+  reply <text...> [--step <id>]  Add a reply yourself (mostly for tooling/tests).
+  pane                        Run the interactive reviewer (used inside a pane).
+
+Render + manage:
+  serve [--port <n>]         Run the live browser view (used by --render web).
   render [--format html|ansi|md] [--out <file>]   Print/write a static render.
   list                       List steps in the active walk.
   walks                      List all walks.
   use <id>                   Switch the active walk.
   status                     Show the active walk id and step count.
+  stop                       Close the reviewer pane and stop the server.
 
 Examples:
-  walk serve --port 4599 &
   walk start "PR #17: streaming diff walk"
   walk say "This change makes **live** diff narration possible."
-  walk diff --pr 17 --title "The new public interface" \\
-       --comment "src/walk.ts:42:this gate is the interesting part"
-  git diff | walk diff --stdin --note "Working-tree changes"
+  walk diff --pr 17 --files src/walk.ts --title "The new interface"
+  walk present                       # opens a reviewer pane, waits for a comment
+  # → read the reply, respond, build the next step, present again
+  walk present --render web --open   # same loop, in the browser
+  walk present --render cli          # inline render; reply is your next message
 `;
+
+const useColor = process.stdout.isTTY === true && !process.env.NO_COLOR;
+const dim = (s: string) => (useColor ? `\x1b[2m${s}\x1b[0m` : s);
+const boldGreen = (s: string) => (useColor ? `\x1b[1;32m${s}\x1b[0m` : s);
+
+/**
+ * Print a reply in a clearly delimited block. This is what the agent reads back
+ * as the result of a blocking `present`/`await`, so it must stand out from the
+ * surrounding tool chatter.
+ */
+function printReply(reply: Reply): void {
+  const a = reply.anchor;
+  const on = a
+    ? ` on ${a.file}:${a.line}${a.endLine && a.endLine > a.line ? `–${a.endLine}` : ""}`
+    : reply.stepId
+      ? ` on ${reply.stepId}`
+      : "";
+  console.log("");
+  console.log(boldGreen(`╭─ reply from ${reply.source}${on} ` + "─".repeat(Math.max(0, 40 - reply.source.length))));
+  for (const line of reply.text.split("\n")) console.log(boldGreen("│ ") + line);
+  console.log(boldGreen("╰" + "─".repeat(52)));
+  console.log("");
+}
 
 function parseCommentSpec(spec: string): Comment {
   // Format: path:line:message  (message may contain colons)
@@ -138,6 +184,7 @@ async function main() {
           title: { type: "string" },
           note: { type: "string" },
           comment: { type: "string", multiple: true },
+          context: { type: "string" },
         },
         allowPositionals: true,
       });
@@ -149,6 +196,7 @@ async function main() {
         staged: values.staged as boolean,
         stdin: values.stdin as boolean,
         files: values.files as string[] | undefined,
+        context: values.context != null ? parseInt(values.context as string, 10) : undefined,
       });
 
       const files = parseUnifiedDiff(raw);
@@ -194,6 +242,115 @@ async function main() {
       return;
     }
 
+    case "present": {
+      const { values } = parseArgs({
+        args: rest,
+        options: {
+          render: { type: "string" },
+          step: { type: "string" },
+          wait: { type: "boolean", default: true },
+          "no-wait": { type: "boolean", default: false },
+          timeout: { type: "string" },
+          port: { type: "string", default: "4599" },
+          open: { type: "boolean", default: false },
+        },
+        allowPositionals: true,
+      });
+
+      const raw = (values.render as string | undefined) ?? (inHerdr() ? "pane" : "cli");
+      const render: RenderTarget = raw === "webpage" ? "web" : (raw as RenderTarget);
+      if (!["cli", "pane", "web"].includes(render)) {
+        throw new Error(`--render must be pane, web, or cli (got "${raw}")`);
+      }
+      const wait = (values["no-wait"] as boolean) ? false : (values.wait as boolean);
+      const timeoutSec = values.timeout ? parseInt(values.timeout as string, 10) : undefined;
+
+      const result = await present({
+        render,
+        stepId: values.step as string | undefined,
+        wait,
+        timeoutSec,
+        port: parseInt(values.port as string, 10),
+        open: values.open as boolean,
+      });
+
+      if (result.note) {
+        console.log(result.note);
+        return;
+      }
+
+      if (render === "cli" && result.step) {
+        process.stdout.write("\n" + renderStep(result.step) + "\n");
+        console.log(`\n${dim("— rendered inline. The user's reply is their next message.")}`);
+        return;
+      }
+
+      const where = render === "pane" ? "reviewer pane" : "browser";
+      if (!wait) {
+        console.log(`Presented step to the ${where}. (not waiting for a reply)`);
+        return;
+      }
+      if (result.reply) {
+        printReply(result.reply);
+      } else {
+        console.log(`No reply within the timeout. Run \`walk await\` to keep waiting, or check the ${where}.`);
+      }
+      return;
+    }
+
+    case "await": {
+      const { values } = parseArgs({
+        args: rest,
+        options: { timeout: { type: "string" } },
+        allowPositionals: true,
+      });
+      const timeoutSec = values.timeout ? parseInt(values.timeout as string, 10) : undefined;
+      const reply = await awaitReply(timeoutSec != null ? timeoutSec * 1000 : undefined);
+      if (reply) printReply(reply);
+      else console.log("No reply within the timeout.");
+      return;
+    }
+
+    case "reply": {
+      const { values, positionals } = parseArgs({
+        args: rest,
+        options: { step: { type: "string" } },
+        allowPositionals: true,
+      });
+      const text = positionals.join(" ").trim();
+      if (!text) throw new Error('reply needs text: walk reply "..."');
+      const r = writeReply(text, { stepId: (values.step as string | undefined) ?? null, source: "cli" });
+      console.log(`Recorded reply ${r.id}.`);
+      return;
+    }
+
+    case "pane": {
+      await runReviewer(); // runs until the pane closes or Ctrl-C
+      return;
+    }
+
+    case "stop": {
+      const paneId = getPaneId();
+      if (paneId) {
+        try {
+          closePane(paneId);
+        } catch {
+          /* pane may already be gone */
+        }
+      }
+      const info = getServerInfo();
+      if (info?.pid) {
+        try {
+          process.kill(info.pid);
+        } catch {
+          /* already stopped */
+        }
+      }
+      clearServerInfo();
+      console.log("Closed reviewer pane and stopped the server (if running).");
+      return;
+    }
+
     case "render": {
       const { values } = parseArgs({
         args: rest,
@@ -205,7 +362,7 @@ async function main() {
       });
       const walk = loadCurrent();
       let output: string;
-      if (values.format === "html") output = renderStandalone(walk);
+      if (values.format === "html") output = renderStandalone(walk, { replies: listReplies() });
       else output = renderTerminal(walk); // ansi/md both go through the text renderer
       if (values.out) {
         await Bun.write(values.out as string, output);

@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "cli-highlight": "^2.1.11",
     "marked": "^12.0.0"
   },
   "devDependencies": {

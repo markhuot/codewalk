@@ -43,6 +43,15 @@ export interface Comment {
   body: string;
 }
 
+/** A line (or line range) in a diff, used to anchor a click-to-comment reply. */
+export interface LineAnchor {
+  file: string;
+  line: number;
+  side: CommentSide;
+  /** Set for a click-and-drag selection; the range is line..endLine inclusive. */
+  endLine?: number;
+}
+
 export interface ProseStep {
   kind: "prose";
   id: string;
@@ -65,4 +74,34 @@ export interface Walk {
   title: string;
   createdAt: string;
   steps: Step[];
+}
+
+/** Where a reply came from. */
+export type ReplySource = "pane" | "web" | "cli";
+
+/**
+ * A message from the human back to the agent. Replies land in the inbox
+ * (`.codewalk/replies/`) regardless of render target, and a blocking
+ * `walk await` pipes the next unconsumed one back into the conversation.
+ */
+export interface Reply {
+  id: string;
+  at: string;
+  /** The step the user was looking at when they replied (best-effort). */
+  stepId: string | null;
+  text: string;
+  source: ReplySource;
+  /** Set when the reply was left on a specific diff line (click-to-comment). */
+  anchor?: LineAnchor;
+}
+
+/**
+ * The step currently "on stage". `seq` increments on every `present`, which
+ * is how a live reviewer (pane or browser) knows the agent advanced and it
+ * should re-render and prompt again.
+ */
+export interface Focus {
+  stepId: string | null;
+  seq: number;
+  at: string;
 }
