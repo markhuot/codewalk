@@ -29,6 +29,7 @@ The binary is `walk`. During development run it as `bun run <repo>/src/cli.ts <a
    walk present
    ```
    Read what comes back, answer it in chat, then build and present the next step. Repeat until the walk is done.
+5. **Finish the walk.** After the last step's reply, call `walk finish "<optional one-line summary>"`. The reviewer shows a completion screen and the pane closes itself; the browser shows an "all steps reviewed" screen. Don't leave a walk dangling on its final step — always finish it so the ending feels deliberate.
 
 `present` puts the **latest** step on stage by default (pass `--step <id>` to re-present an earlier one). A running reviewer advances to whatever you present next, so the human always sees the change you're talking about.
 
@@ -66,9 +67,10 @@ Decorate a diff step with `--title`, `--note "<markdown>"`, and repeatable `--co
 
 - `walk comment <path> <line> "<msg>" [--side old|new] [--step <id>]` — attach an inline comment to a diff step after the fact.
 - `walk reply "<text>"` — record a reply yourself (mostly for tooling/tests).
+- `walk finish "<summary>"` — end the walk: completion screen in the reviewer, then the pane closes; the browser shows an all-reviewed screen. Call this after the final step.
 - `walk render [--format html|ansi] [--out <file>]` — static render of the whole walk (no interaction).
 - `walk list` / `walk walks` / `walk use <id>` / `walk status` — inspect and switch walks.
-- `walk stop` — close the reviewer pane and stop the server when the walk is done.
+- `walk stop` — force-close the reviewer pane and stop the server (finish is the graceful way to end).
 
 ## Shape of a good step: text-first, code-light
 

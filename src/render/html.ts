@@ -128,15 +128,27 @@ export function renderFragment(
     return `<div class="empty">No active walk yet. Run <code>walk start "&lt;title&gt;"</code>.</div>`;
   }
   const replies = ctx.replies ?? [];
-  const focusId = ctx.focus?.stepId ?? null;
   const total = walk.steps.length;
+  const seq = ctx.focus?.seq ?? 0;
+
+  // Walk finished: a completion screen, no composer.
+  if (ctx.focus?.done) {
+    const summary = ctx.focus.summary
+      ? `<p class="complete-summary">${marked.parseInline(ctx.focus.summary) as string}</p>`
+      : "";
+    const marker = `<div id="focus-marker" data-step-id="" data-seq="${seq}" data-done="1" hidden></div>`;
+    return `${marker}<div class="complete"><div class="complete-check">✓</div>` +
+      `<h1>All steps reviewed</h1>` +
+      `<p class="complete-sub">${esc(walk.title)} · ${total} step${total === 1 ? "" : "s"}</p>${summary}</div>`;
+  }
+
+  const focusId = ctx.focus?.stepId ?? null;
   const idx = focusId ? walk.steps.findIndex((s) => s.id === focusId) : -1;
   const step = idx >= 0 ? walk.steps[idx] : null;
 
   // data-seq lets the client tell "agent advanced" (seq changed) from "same
   // step, just re-rendered" (e.g. a comment was added), which drives the
   // working indicator.
-  const seq = ctx.focus?.seq ?? 0;
   const marker = `<div id="focus-marker" data-step-id="${esc(step ? step.id : "")}" data-seq="${seq}" hidden></div>`;
   const header =
     `<header class="walk-header"><div class="walk-eyebrow">${esc(walk.title)}</div>` +
@@ -305,6 +317,13 @@ main { max-width: 980px; margin: 0 auto; padding: 24px 20px 140px; }
 .reply-body code { background: rgba(127,127,127,.15); padding: .1em .35em; border-radius: 4px; }
 .binary { padding: 16px; color: var(--muted); font-style: italic; }
 .empty { padding: 48px 0; color: var(--muted); text-align: center; }
+.complete { min-height: 70vh; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 6px; }
+.complete-check { width: 68px; height: 68px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 34px; color: #fff; background: var(--marker-add); margin-bottom: 14px; animation: pop .35s cubic-bezier(.2,.9,.3,1.4); }
+.complete h1 { font-size: 24px; margin: 0; letter-spacing: -0.01em; }
+.complete-sub { color: var(--muted); margin: 2px 0 0; }
+.complete-summary { max-width: 60ch; margin: 14px 0 0; color: var(--fg); }
+@keyframes pop { from { transform: scale(0); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .complete-check { animation: none; } }
 .empty code { background: var(--code-bg); padding: .15em .4em; border-radius: 5px; }
 .composer {
   position: fixed; left: 50%; transform: translateX(-50%); bottom: 16px;

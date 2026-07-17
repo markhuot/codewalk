@@ -17,6 +17,7 @@ import {
   nextStepId,
   saveWalk,
   setCurrent,
+  setFinished,
   writeReply,
 } from "./store.ts";
 import { renderStep, renderTerminal } from "./render/terminal.ts";
@@ -54,6 +55,8 @@ Present + converse (the main loop):
        [--timeout <sec>] [--port <n>] stdout so it flows back into the conversation.
        [--open]                       Default target: pane inside herdr, else cli.
   await [--timeout <sec>]     Block for the next reply without presenting.
+  finish [<summary>]          End the walk: the pane shows "complete" then closes,
+                              the browser shows an all-reviewed screen.
   reply <text...> [--step <id>]  Add a reply yourself (mostly for tooling/tests).
   pane                        Run the interactive reviewer (used inside a pane).
 
@@ -321,6 +324,15 @@ async function main() {
       if (!text) throw new Error('reply needs text: walk reply "..."');
       const r = writeReply(text, { stepId: (values.step as string | undefined) ?? null, source: "cli" });
       console.log(`Recorded reply ${r.id}.`);
+      return;
+    }
+
+    case "finish": {
+      const summary = rest.join(" ").trim();
+      setFinished(summary || undefined);
+      // The reviewer shows a completion screen and closes its own pane; the
+      // browser shows an "all steps reviewed" screen via SSE.
+      console.log("Walk finished — completion shown to the reviewer.");
       return;
     }
 

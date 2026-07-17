@@ -118,4 +118,9 @@ export interface Focus {
   stepId: string | null;
   seq: number;
   at: string;
+  /** Set by `walk finish`: the walk is complete. Reviewers show a done screen
+   * (and the pane closes itself). */
+  done?: boolean;
+  /** Optional closing note shown on the completion screen. */
+  summary?: string;
 }

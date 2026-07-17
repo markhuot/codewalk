@@ -236,6 +236,21 @@ export function setFocus(stepId: string | null): Focus {
   return focus;
 }
 
+/** Mark the walk complete: reviewers show a done screen and the pane closes. */
+export function setFinished(summary?: string): Focus {
+  ensureDir();
+  const prev = getFocus();
+  const focus: Focus = {
+    stepId: null, // the walk is over — no step is on stage
+    seq: (prev?.seq ?? 0) + 1,
+    at: new Date().toISOString(),
+    done: true,
+    ...(summary ? { summary } : {}),
+  };
+  writeFileSync(focusPath(), JSON.stringify(focus, null, 2));
+  return focus;
+}
+
 // ── Render-target pointers ───────────────────────────────────────────────────
 // Remember the reviewer pane and the running server between CLI invocations.
 

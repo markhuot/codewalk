@@ -10,14 +10,17 @@ import { watch } from "node:fs";
 import { stdin, stdout } from "node:process";
 import {
   addCommentToStep,
+  clearPaneId,
   clearReviewerPid,
   getFocus,
+  getPaneId,
   listReplies,
   loadCurrent,
   setReviewerPid,
   stateDir,
   writeReply,
 } from "./store.ts";
+import { activeDriver } from "./panes/index.ts";
 import { buildContentRows, type Row } from "./render/rows.ts";
 import type { Focus, LineAnchor, LineComment, Step, Walk } from "./types.ts";
 
@@ -57,6 +60,7 @@ interface State {
   working: boolean;
   workingSeq: number;
   spinFrame: number;
+  finished: boolean;
   status: string;
   lastSeq: number;
 }
@@ -75,6 +79,7 @@ const state: State = {
   working: false,
   workingSeq: -1,
   spinFrame: 0,
+  finished: false,
   status: "",
   lastSeq: -1,
 };
@@ -91,6 +96,22 @@ function startSpinner(): void {
 function stopSpinner(): void {
   if (spinTimer) clearInterval(spinTimer);
   spinTimer = null;
+}
+
+/** After showing the completion screen, close the pane (and this process). */
+function scheduleClose(): void {
+  setTimeout(() => {
+    const paneId = getPaneId();
+    clearReviewerPid();
+    clearPaneId();
+    try {
+      if (paneId) activeDriver()?.close(paneId);
+    } catch {
+      /* pane may already be gone */
+    }
+    teardown();
+    process.exit(0);
+  }, 2600);
 }
 
 const SELECTION_BG = "\x1b[48;2;40;52;74m";
@@ -144,6 +165,13 @@ function loadState(): void {
   const seq = state.focus?.seq ?? 0;
   const advanced = seq !== state.lastSeq;
   state.lastSeq = seq;
+
+  // The walk was finished — show the completion screen and close the pane.
+  if (state.focus?.done && !state.finished) {
+    state.finished = true;
+    stopSpinner();
+    scheduleClose();
+  }
 
   state.rows = step ? buildContentRows(step, listReplies(), cols(), state.pending) : [{ ansi: dim("Waiting for the agent to present a step…") }];
 
@@ -239,7 +267,34 @@ function footer(c: number): { lines: string[]; caretCol: number } {
   return { lines: [top + CLEAR_EOL, inputLine + CLEAR_EOL, bottom + CLEAR_EOL], caretCol };
 }
 
+/** The end-of-walk screen: centered, then the pane closes itself. */
+function renderComplete(): void {
+  const c = cols();
+  const r = screenRows();
+  const n = state.walk?.steps.length ?? 0;
+  const block: string[] = [
+    green("✓  Walk complete"),
+    "",
+    dim(`${n} step${n === 1 ? "" : "s"} reviewed`),
+    ...(state.focus?.summary ? ["", state.focus.summary] : []),
+    "",
+    dim("closing this pane…"),
+  ];
+  const center = (s: string) => {
+    const plain = s.replace(/\x1b\[[0-9;]*m/g, "");
+    const pad = Math.max(0, Math.floor((c - plain.length) / 2));
+    return " ".repeat(pad) + s;
+  };
+  const top = Math.max(0, Math.floor((r - block.length) / 2));
+  const out = CURSOR_HIDE + "\x1b[2J\x1b[3J\x1b[H" + "\n".repeat(top) + block.map(center).join("\n");
+  stdout.write(out);
+}
+
 function render(): void {
+  if (state.finished) {
+    renderComplete();
+    return;
+  }
   const c = cols();
   const vh = viewportH();
   const lines: string[] = [];
@@ -368,6 +423,16 @@ function handleData(buf: string): void {
   let i = 0;
   while (i < buf.length) {
     const ch = buf[i]!;
+
+    // Once finished, the pane is closing; ignore everything but Ctrl-C.
+    if (state.finished) {
+      if (ch === "\x03") {
+        teardown();
+        process.exit(0);
+      }
+      i += 1;
+      continue;
+    }
 
     if (ch === "\x1b") {
       const rest = buf.slice(i);
