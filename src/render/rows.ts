@@ -3,7 +3,7 @@
 // a mouse click can map a screen row back to a specific file line for
 // click-to-comment. Code is syntax-highlighted over the diff background bands.
 
-import type { Comment, DiffFile, LineAnchor, LineComment, Reply, Step, Walk } from "../types.ts";
+import type { Comment, DiffFile, LineAnchor, LineComment, Reply, Step } from "../types.ts";
 import { highlightLine, langFor } from "./highlight.ts";
 import { bandColors } from "./theme.ts";
 
@@ -187,19 +187,16 @@ function threadRows(replies: Reply[], cols: number): Row[] {
   return rows;
 }
 
-/** The scrollable content rows for the focused step. */
+/** The scrollable content rows for the step on stage. */
 export function buildContentRows(step: Step, replies: Reply[], cols: number, pending: LineComment[] = []): Row[] {
   const rows: Row[] = [];
-  if (step.kind === "prose") {
-    rows.push(...proseRows(step.text, cols));
-  } else {
-    if (step.title) rows.push({ ansi: bold(step.title) }, { ansi: "" });
-    if (step.note) rows.push(...proseRows(step.note, cols), { ansi: "" });
-    for (const f of step.files) {
-      rows.push(...fileRows(f, step.comments, cols, pending));
-      rows.push({ ansi: "" });
-    }
+  if (step.title) rows.push({ ansi: bold(step.title) }, { ansi: "" });
+  if (step.note) rows.push(...proseRows(step.note, cols), { ansi: "" });
+  for (const f of step.files) {
+    rows.push(...fileRows(f, step.comments, cols, pending));
+    rows.push({ ansi: "" });
   }
-  rows.push(...threadRows(replies.filter((r) => r.stepId === step.id), cols));
+  // One step on stage, so every reply belongs to it.
+  rows.push(...threadRows(replies, cols));
   return rows;
 }

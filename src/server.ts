@@ -1,28 +1,17 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { watch } from "node:fs";
 import {
-  addCommentToStep,
+  addCommentToCurrentStep,
   clearServerInfo,
-  currentId,
   getFocus,
+  getSession,
   listReplies,
-  loadWalk,
   setServerInfo,
   stateDir,
   writeReply,
 } from "./store.ts";
 import { renderFragment, renderPage } from "./render/html.ts";
-import type { LineComment, Walk } from "./types.ts";
-
-function activeWalk(): Walk | null {
-  const id = currentId();
-  if (!id) return null;
-  try {
-    return loadWalk(id);
-  } catch {
-    return null;
-  }
-}
+import type { LineComment } from "./types.ts";
 
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -54,7 +43,7 @@ export function serve(port: number): { port: number; stop: () => void } {
     debounce = setTimeout(broadcast, 60);
   });
 
-  const fragment = () => renderFragment(activeWalk(), { focus: getFocus(), replies: listReplies() });
+  const fragment = () => renderFragment(getSession(), { focus: getFocus(), replies: listReplies() });
 
   const html = (res: ServerResponse, body: string, cache = true) => {
     res.writeHead(200, { "content-type": "text/html; charset=utf-8", ...(cache ? {} : { "cache-control": "no-store" }) });
@@ -72,7 +61,7 @@ export function serve(port: number): { port: number; stop: () => void } {
     if (path === "/") return html(res, renderPage());
     if (path === "/fragment") return html(res, fragment(), false);
     if (path === "/api/health") return json(res, 200, { codewalk: true, pid: process.pid });
-    if (path === "/api/walk") return json(res, 200, activeWalk());
+    if (path === "/api/session") return json(res, 200, getSession());
 
     // The browser "complete step" POSTs a submission: a message plus staged line
     // comments. It lands in the same inbox a pane reply would.
@@ -88,11 +77,9 @@ export function serve(port: number): { port: number; stop: () => void } {
         const comments = Array.isArray(data.comments) ? data.comments : [];
         if (!message && comments.length === 0) return json(res, 400, { ok: false, error: "empty" });
         const stepId = data.stepId ?? null;
-        if (stepId) {
-          for (const c of comments) {
-            const label = c.endLine && c.endLine > c.line ? `(lines ${c.line}–${c.endLine}) ${c.text}` : c.text;
-            addCommentToStep(stepId, { file: c.file, line: c.line, side: c.side, body: label });
-          }
+        for (const c of comments) {
+          const label = c.endLine && c.endLine > c.line ? `(lines ${c.line}–${c.endLine}) ${c.text}` : c.text;
+          addCommentToCurrentStep({ file: c.file, line: c.line, side: c.side, body: label });
         }
         const reply = writeReply(message, { stepId, source: "web", comments });
         return json(res, 200, { ok: true, reply });

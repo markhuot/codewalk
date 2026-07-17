@@ -1,6 +1,6 @@
 import { mkdirSync, existsSync, readFileSync, writeFileSync, readdirSync, watch } from "node:fs";
 import { join } from "node:path";
-import type { Comment, Focus, LineAnchor, LineComment, Reply, ReplySource, Step, Walk } from "./types.ts";
+import type { Comment, Focus, LineAnchor, LineComment, Reply, ReplySource, Session, Step } from "./types.ts";
 
 /** Root directory for walk state. Override with CODEWALK_DIR. */
 export function stateDir(): string {
@@ -13,82 +13,54 @@ function ensureDir(): string {
   return dir;
 }
 
-function walkPath(id: string): string {
-  return join(stateDir(), `${id}.json`);
+function sessionPath(): string {
+  return join(stateDir(), "session.json");
 }
 
-function currentPointerPath(): string {
-  return join(stateDir(), "current");
-}
-
-let counter = 0;
-function makeId(prefix: string): string {
-  // Deterministic within a process; unique across processes via time-ish salt
-  // derived from the existing files so we never collide with a prior walk.
-  counter += 1;
-  const salt = readdirSync(ensureDir()).length + counter;
-  return `${prefix}-${salt.toString(36)}-${process.pid.toString(36)}`;
-}
-
-export function createWalk(title: string): Walk {
+export function createSession(title: string): Session {
   ensureDir();
-  const walk: Walk = {
-    id: makeId("walk"),
+  const session: Session = {
     title,
     createdAt: new Date().toISOString(),
-    steps: [],
+    step: null,
   };
-  saveWalk(walk);
-  setCurrent(walk.id);
-  return walk;
+  saveSession(session);
+  return session;
 }
 
-export function saveWalk(walk: Walk): void {
+export function saveSession(session: Session): void {
   ensureDir();
-  writeFileSync(walkPath(walk.id), JSON.stringify(walk, null, 2));
+  writeFileSync(sessionPath(), JSON.stringify(session, null, 2));
 }
 
-export function loadWalk(id: string): Walk {
-  const raw = readFileSync(walkPath(id), "utf8");
-  return JSON.parse(raw) as Walk;
+export function loadSession(): Session {
+  const p = sessionPath();
+  if (!existsSync(p)) throw new Error("No active walk. Run `walk start \"<title>\"` first.");
+  return JSON.parse(readFileSync(p, "utf8")) as Session;
 }
 
-export function setCurrent(id: string): void {
-  ensureDir();
-  writeFileSync(currentPointerPath(), id);
+export function getSession(): Session | null {
+  try {
+    return loadSession();
+  } catch {
+    return null;
+  }
 }
 
-export function currentId(): string | null {
-  const p = currentPointerPath();
-  if (!existsSync(p)) return null;
-  return readFileSync(p, "utf8").trim() || null;
+/** Put a step on stage, replacing whatever was there. */
+export function setStep(step: Step): Session {
+  const session = loadSession();
+  session.step = step;
+  saveSession(session);
+  return session;
 }
 
-export function loadCurrent(): Walk {
-  const id = currentId();
-  if (!id) throw new Error("No active walk. Run `walk start \"<title>\"` first.");
-  return loadWalk(id);
-}
-
-export function addStep(step: Step): Walk {
-  const walk = loadCurrent();
-  walk.steps.push(step);
-  saveWalk(walk);
-  return walk;
-}
-
-/** Attach an inline comment to a diff step (by id) in the active walk. */
-export function addCommentToStep(stepId: string, comment: Comment): void {
-  const walk = loadCurrent();
-  const step = walk.steps.find((s) => s.id === stepId);
-  if (!step || step.kind !== "diff") return;
-  step.comments.push(comment);
-  saveWalk(walk);
-}
-
-export function nextStepId(walk: Walk, kind: string): string {
-  const n = walk.steps.filter((s) => s.kind === kind).length + 1;
-  return `${kind}-${n}`;
+/** Attach an inline comment to the step currently on stage. */
+export function addCommentToCurrentStep(comment: Comment): void {
+  const session = loadSession();
+  if (!session.step) return;
+  session.step.comments.push(comment);
+  saveSession(session);
 }
 
 // ── The reply inbox ───────────────────────────────────────────────────────
@@ -146,10 +118,6 @@ export function listReplies(): Reply[] {
     })
     .filter((r): r is Reply => r != null)
     .sort((a, b) => replyKey(a).localeCompare(replyKey(b)));
-}
-
-export function repliesForStep(stepId: string): Reply[] {
-  return listReplies().filter((r) => r.stepId === stepId);
 }
 
 function readCursor(): string {
@@ -228,10 +196,11 @@ export function getFocus(): Focus | null {
   }
 }
 
-export function setFocus(stepId: string | null): Focus {
+/** Bump the sequence so a live reviewer re-renders the current step. */
+export function setFocus(): Focus {
   ensureDir();
   const prev = getFocus();
-  const focus: Focus = { stepId, seq: (prev?.seq ?? 0) + 1, at: new Date().toISOString() };
+  const focus: Focus = { seq: (prev?.seq ?? 0) + 1, at: new Date().toISOString() };
   writeFileSync(focusPath(), JSON.stringify(focus, null, 2));
   return focus;
 }
@@ -241,7 +210,6 @@ export function setFinished(summary?: string): Focus {
   ensureDir();
   const prev = getFocus();
   const focus: Focus = {
-    stepId: null, // the walk is over — no step is on stage
     seq: (prev?.seq ?? 0) + 1,
     at: new Date().toISOString(),
     done: true,
@@ -324,20 +292,4 @@ export function setServerInfo(info: { port: number; pid: number }): void {
 export function clearServerInfo(): void {
   const p = serverPath();
   if (existsSync(p)) writeFileSync(p, "");
-}
-
-export function listWalks(): { id: string; title: string; steps: number }[] {
-  const dir = stateDir();
-  if (!existsSync(dir)) return [];
-  return readdirSync(dir)
-    .filter((f) => f.endsWith(".json"))
-    .map((f) => {
-      try {
-        const w = JSON.parse(readFileSync(join(dir, f), "utf8")) as Walk;
-        return { id: w.id, title: w.title, steps: w.steps.length };
-      } catch {
-        return null;
-      }
-    })
-    .filter((x): x is { id: string; title: string; steps: number } => x != null);
 }

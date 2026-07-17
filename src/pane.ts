@@ -9,20 +9,20 @@
 import { watch } from "node:fs";
 import { stdin, stdout } from "node:process";
 import {
-  addCommentToStep,
+  addCommentToCurrentStep,
   clearPaneId,
   clearReviewerPid,
   getFocus,
   getPaneId,
+  getSession,
   listReplies,
-  loadCurrent,
   setReviewerPid,
   stateDir,
   writeReply,
 } from "./store.ts";
 import { activeDriver } from "./panes/index.ts";
 import { buildContentRows, type Row } from "./render/rows.ts";
-import type { Focus, LineAnchor, LineComment, Step, Walk } from "./types.ts";
+import type { Focus, LineAnchor, LineComment, Session, Step } from "./types.ts";
 
 const HEADER_H = 3;
 const FOOTER_H = 3;
@@ -47,7 +47,7 @@ const green = (s: string) => `\x1b[32m${s}\x1b[0m`;
 const accent = (s: string) => `\x1b[38;2;88;166;255m${s}\x1b[0m`;
 
 interface State {
-  walk: Walk | null;
+  session: Session | null;
   focus: Focus | null;
   step: Step | null;
   rows: Row[];
@@ -66,7 +66,7 @@ interface State {
 }
 
 const state: State = {
-  walk: null,
+  session: null,
   focus: null,
   step: null,
   rows: [],
@@ -143,23 +143,12 @@ function maxScroll(): number {
   return Math.max(0, state.rows.length - viewportH());
 }
 
-function findStep(walk: Walk, stepId: string | null): { step: Step; index: number } | null {
-  if (!stepId) return null;
-  const index = walk.steps.findIndex((s) => s.id === stepId);
-  return index === -1 ? null : { step: walk.steps[index]!, index };
-}
-
-/** Reload walk/focus and rebuild rows. Resets scroll when the agent advances. */
+/** Reload session/focus and rebuild rows. Resets scroll when the agent advances. */
 function loadState(): void {
-  try {
-    state.walk = loadCurrent();
-  } catch {
-    state.walk = null;
-  }
+  state.session = getSession();
   state.focus = getFocus();
 
-  const target = state.walk ? findStep(state.walk, state.focus?.stepId ?? null) : null;
-  const step = target?.step ?? state.walk?.steps[state.walk.steps.length - 1] ?? null;
+  const step = state.session?.step ?? null;
   state.step = step;
 
   const seq = state.focus?.seq ?? 0;
@@ -203,23 +192,14 @@ function fillRule(prefix: string, cols_: number): string {
 }
 
 function header(c: number): string[] {
-  const walk = state.walk;
-  const title = walk ? walk.title : "codewalk review";
-  const count = walk ? `${walk.steps.length} step(s)` : "";
-  const l1 = truncateVisible(title, c - count.length - 3) ;
-  const line1 = `${bold(l1)}   ${dim(count)}`;
+  const session = state.session;
+  const title = session ? session.title : "codewalk review";
+  const progress = state.step?.progress ? `step ${state.step.progress}` : "";
+  const l1 = truncateVisible(title, c - progress.length - 3);
+  const line1 = `${bold(l1)}   ${dim(progress)}`;
 
-  let crumb = "";
-  if (walk && state.focus?.stepId) {
-    const idx = walk.steps.findIndex((s) => s.id === state.focus!.stepId);
-    if (idx > 0) {
-      crumb = walk.steps
-        .slice(0, idx)
-        .map((s, i) => `${i + 1}·${s.kind === "prose" ? "note" : "diff"}`)
-        .join("  ");
-    }
-  }
-  const line2 = crumb ? dim("← " + truncateVisible(crumb, c - 3)) : dim("");
+  // One step at a time, no stored backlog — nothing to breadcrumb.
+  const line2 = dim("");
 
   // Rule with a right-aligned scroll indicator.
   const total = state.rows.length;
@@ -271,11 +251,8 @@ function footer(c: number): { lines: string[]; caretCol: number } {
 function renderComplete(): void {
   const c = cols();
   const r = screenRows();
-  const n = state.walk?.steps.length ?? 0;
   const block: string[] = [
     green("✓  Walk complete"),
-    "",
-    dim(`${n} step${n === 1 ? "" : "s"} reviewed`),
     ...(state.focus?.summary ? ["", state.focus.summary] : []),
     "",
     dim("closing this pane…"),
@@ -397,17 +374,15 @@ function submit(): void {
 
 /** Send the note plus all staged comments, then wait (working) for the agent. */
 function complete(message: string): void {
-  const stepId = state.step?.id ?? null;
+  const label = state.step?.progress ?? null;
   if (!message && state.pending.length === 0) {
-    writeReply("👍 Looks good — continue.", { stepId, source: "pane" });
+    writeReply("👍 Looks good — continue.", { stepId: label, source: "pane" });
   } else {
-    if (stepId) {
-      for (const c of state.pending) {
-        const body = c.endLine && c.endLine > c.line ? `(lines ${c.line}–${c.endLine}) ${c.text}` : c.text;
-        addCommentToStep(stepId, { file: c.file, line: c.line, side: c.side, body });
-      }
+    for (const c of state.pending) {
+      const body = c.endLine && c.endLine > c.line ? `(lines ${c.line}–${c.endLine}) ${c.text}` : c.text;
+      addCommentToCurrentStep({ file: c.file, line: c.line, side: c.side, body });
     }
-    writeReply(message, { stepId, source: "pane", comments: state.pending });
+    writeReply(message, { stepId: label, source: "pane", comments: state.pending });
   }
   state.working = true;
   state.workingSeq = state.focus?.seq ?? 0;

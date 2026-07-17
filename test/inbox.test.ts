@@ -31,14 +31,6 @@ describe("reply inbox", () => {
     expect(all[1]!.source).toBe("web");
   });
 
-  test("repliesForStep filters by step id", async () => {
-    const s = await store();
-    s.writeReply("on one", { stepId: "diff-1" });
-    s.writeReply("on two", { stepId: "diff-2" });
-    expect(s.repliesForStep("diff-1").map((r) => r.text)).toEqual(["on one"]);
-    expect(s.repliesForStep("diff-2").map((r) => r.text)).toEqual(["on two"]);
-  });
-
   test("awaitReply returns the pending reply and advances the cursor", async () => {
     const s = await store();
     s.writeReply("hello");
@@ -96,15 +88,14 @@ describe("click-to-comment", () => {
     expect(r?.comments?.[1]).toMatchObject({ line: 20, endLine: 24, text: "range one" });
   });
 
-  test("addCommentToStep appends an inline comment to a diff step", async () => {
+  test("addCommentToCurrentStep appends an inline comment to the step on stage", async () => {
     const s = await store();
-    const walk = s.createWalk("t");
-    s.addStep({ kind: "diff", id: "diff-1", files: [], comments: [] });
-    s.addCommentToStep("diff-1", { file: "a.ts", line: 9, side: "new", body: "why here?" });
-    const reloaded = s.loadWalk(walk.id);
-    const step = reloaded.steps.find((x) => x.id === "diff-1")!;
+    s.createSession("t");
+    s.setStep({ kind: "diff", files: [], comments: [] });
+    s.addCommentToCurrentStep({ file: "a.ts", line: 9, side: "new", body: "why here?" });
+    const step = s.loadSession().step!;
     expect(step.kind).toBe("diff");
-    expect((step as any).comments).toEqual([{ file: "a.ts", line: 9, side: "new", body: "why here?" }]);
+    expect(step.comments).toEqual([{ file: "a.ts", line: 9, side: "new", body: "why here?" }]);
   });
 });
 
@@ -123,11 +114,8 @@ describe("focus pointer", () => {
   test("setFocus bumps the sequence on every present", async () => {
     const s = await store();
     expect(s.getFocus()).toBeNull();
-    const f1 = s.setFocus("diff-1");
-    expect(f1.seq).toBe(1);
-    expect(f1.stepId).toBe("diff-1");
-    const f2 = s.setFocus("diff-2");
-    expect(f2.seq).toBe(2);
-    expect(s.getFocus()?.stepId).toBe("diff-2");
+    expect(s.setFocus().seq).toBe(1);
+    expect(s.setFocus().seq).toBe(2);
+    expect(s.getFocus()?.seq).toBe(2);
   });
 });

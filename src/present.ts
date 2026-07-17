@@ -7,7 +7,7 @@ import {
   awaitReply,
   getPaneId,
   getServerInfo,
-  loadCurrent,
+  loadSession,
   reviewerAlive,
   setFocus,
   setPaneId,
@@ -21,7 +21,6 @@ export type RenderTarget = "cli" | "pane" | "web";
 
 export interface PresentOptions {
   render: RenderTarget;
-  stepId?: string;
   wait: boolean;
   timeoutSec?: number;
   port: number;
@@ -161,12 +160,10 @@ function openBrowser(url: string): void {
 }
 
 export async function present(opts: PresentOptions): Promise<PresentResult> {
-  const walk = loadCurrent();
-  const stepId = opts.stepId ?? walk.steps[walk.steps.length - 1]?.id ?? null;
-  const step = stepId ? walk.steps.find((s) => s.id === stepId) ?? null : null;
+  const step = loadSession().step;
 
   // Bump focus first so any already-running target re-renders immediately.
-  setFocus(stepId);
+  setFocus();
 
   const timeoutMs = opts.timeoutSec != null ? opts.timeoutSec * 1000 : undefined;
 

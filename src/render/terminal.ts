@@ -1,4 +1,4 @@
-import type { Comment, DiffFile, Reply, Step, Walk } from "../types.ts";
+import type { Comment, DiffFile, Reply, Step } from "../types.ts";
 import { highlightLine, langFor } from "./highlight.ts";
 import { bandColors } from "./theme.ts";
 
@@ -126,18 +126,14 @@ function termWidth(explicit?: number): number {
   return explicit ?? (process.stdout.columns && process.stdout.columns > 0 ? process.stdout.columns : 100);
 }
 
-/** Render one step (prose or diff) as a self-contained block. */
+/** Render one step as a self-contained block. */
 export function renderStep(step: Step, opts: { width?: number } = {}): string {
   const width = termWidth(opts.width);
   const out: string[] = [];
-  if (step.kind === "prose") {
-    out.push(proseToTerminal(step.text));
-  } else {
-    if (step.title) out.push(bold(step.title));
-    if (step.note) out.push(proseToTerminal(step.note));
-    if (step.title || step.note) out.push("");
-    for (const f of step.files) out.push(renderFile(f, step.comments, width));
-  }
+  if (step.title) out.push(bold(step.title));
+  if (step.note) out.push(proseToTerminal(step.note));
+  if (step.title || step.note) out.push("");
+  for (const f of step.files) out.push(renderFile(f, step.comments, width));
   return out.join("\n");
 }
 
@@ -151,18 +147,5 @@ export function renderThread(replies: Reply[]): string {
     for (const line of r.text.split("\n")) out.push(green("  │ ") + line);
     out.push(green("  └"));
   }
-  return out.join("\n");
-}
-
-/** Render a whole walk as plain (optionally ANSI-colored) terminal text. */
-export function renderTerminal(walk: Walk): string {
-  const out: string[] = [];
-  out.push(bold(`\n${walk.title}`));
-  out.push(dim("─".repeat(Math.min(Math.max(walk.title.length, 8), 72))));
-  for (const step of walk.steps) {
-    out.push("");
-    out.push(renderStep(step));
-  }
-  out.push("");
   return out.join("\n");
 }

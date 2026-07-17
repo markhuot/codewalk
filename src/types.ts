@@ -57,28 +57,27 @@ export interface LineComment extends LineAnchor {
   text: string;
 }
 
-export interface ProseStep {
-  kind: "prose";
-  id: string;
-  text: string;
-}
-
 export interface DiffStep {
   kind: "diff";
-  id: string;
   title?: string;
   note?: string;
+  /** Cosmetic progress label (e.g. "1/4") shown in the reviewer header. */
+  progress?: string;
   files: DiffFile[];
   comments: Comment[];
 }
 
-export type Step = ProseStep | DiffStep;
+export type Step = DiffStep;
 
-export interface Walk {
-  id: string;
+/**
+ * A codewalk session holds exactly one step — the one on stage. The tool does
+ * not accumulate a backlog: authoring the next step overwrites this one, which
+ * is what forces the walk to advance one live step at a time.
+ */
+export interface Session {
   title: string;
   createdAt: string;
-  steps: Step[];
+  step: Step | null;
 }
 
 /** Where a reply came from. */
@@ -98,7 +97,7 @@ export type ReplySource = "pane" | "web" | "cli";
 export interface Reply {
   id: string;
   at: string;
-  /** The step the user was looking at when they replied (best-effort). */
+  /** The step's progress label when they replied (best-effort context). */
   stepId: string | null;
   /** The overall message ("" when the submission is only line comments). */
   text: string;
@@ -110,12 +109,11 @@ export interface Reply {
 }
 
 /**
- * The step currently "on stage". `seq` increments on every `present`, which
- * is how a live reviewer (pane or browser) knows the agent advanced and it
- * should re-render and prompt again.
+ * A bump signal for the live reviewer. `seq` increments on every `present`,
+ * which is how a running reviewer (pane or browser) knows the agent advanced
+ * and it should re-render the current step and prompt again.
  */
 export interface Focus {
-  stepId: string | null;
   seq: number;
   at: string;
   /** Set by `walk finish`: the walk is complete. Reviewers show a done screen

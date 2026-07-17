@@ -1,6 +1,6 @@
 import { marked } from "marked";
 import { highlightHtml, langFor } from "./highlight-html.ts";
-import type { Comment, DiffFile, DiffStep, Focus, Reply, Step, Walk } from "../types.ts";
+import type { Comment, DiffFile, Focus, Reply, Session, Step } from "../types.ts";
 
 function esc(s: string): string {
   return s
@@ -92,83 +92,59 @@ function renderThread(replies: Reply[]): string {
 }
 
 function renderStepInner(step: Step): string {
-  if (step.kind === "prose") {
-    return marked.parse(step.text) as string;
-  }
-  const s = step as DiffStep;
-  const title = s.title ? `<h3 class="diff-title">${esc(s.title)}</h3>` : "";
-  const note = s.note ? `<div class="diff-note">${marked.parse(s.note) as string}</div>` : "";
-  const files = s.files.map((f) => renderFile(f, s.comments)).join("");
+  const title = step.title ? `<h3 class="diff-title">${esc(step.title)}</h3>` : "";
+  const note = step.note ? `<div class="diff-note">${marked.parse(step.note) as string}</div>` : "";
+  const files = step.files.map((f) => renderFile(f, step.comments)).join("");
   return `${title}${note}${files}`;
 }
 
 function stepSection(step: Step, replies: Reply[]): string {
-  const kind = step.kind === "prose" ? "step-prose" : "step-diff";
-  const thread = renderThread(replies.filter((r) => r.stepId === step.id));
-  return `<section class="step ${kind}" id="step-${esc(step.id)}" data-step-id="${esc(step.id)}">` +
-    `${renderStepInner(step)}${thread}</section>`;
-}
-
-function progressDots(total: number, current: number): string {
-  let dots = "";
-  for (let i = 0; i < total; i++) dots += `<span class="dot${i <= current ? " on" : ""}"></span>`;
-  return `<span class="dots">${dots}</span>`;
+  // One step on stage, so every reply belongs to it.
+  const thread = renderThread(replies);
+  return `<section class="step step-diff">${renderStepInner(step)}${thread}</section>`;
 }
 
 /**
- * The live browser fragment. Shows only the step the agent is currently
- * presenting (paced by the agent, so the reader can't jump ahead), with a
- * progress indicator. The static/standalone render shows the whole walk.
+ * The live browser fragment. Shows the one step on stage (the agent paces the
+ * walk, so the reader can't jump ahead). `--step 1/4` rides along as a label.
  */
 export function renderFragment(
-  walk: Walk | null,
+  session: Session | null,
   ctx: { focus?: Focus | null; replies?: Reply[] } = {},
 ): string {
-  if (!walk) {
+  if (!session) {
     return `<div class="empty">No active walk yet. Run <code>walk start "&lt;title&gt;"</code>.</div>`;
   }
   const replies = ctx.replies ?? [];
-  const total = walk.steps.length;
   const seq = ctx.focus?.seq ?? 0;
+  const step = session.step;
 
   // Walk finished: a completion screen, no composer.
   if (ctx.focus?.done) {
     const summary = ctx.focus.summary
       ? `<p class="complete-summary">${marked.parseInline(ctx.focus.summary) as string}</p>`
       : "";
-    const marker = `<div id="focus-marker" data-step-id="" data-seq="${seq}" data-done="1" hidden></div>`;
+    const marker = `<div id="focus-marker" data-seq="${seq}" data-done="1" hidden></div>`;
     return `${marker}<div class="complete"><div class="complete-check">✓</div>` +
       `<h1>All steps reviewed</h1>` +
-      `<p class="complete-sub">${esc(walk.title)} · ${total} step${total === 1 ? "" : "s"}</p>${summary}</div>`;
+      `<p class="complete-sub">${esc(session.title)}</p>${summary}</div>`;
   }
-
-  const focusId = ctx.focus?.stepId ?? null;
-  const idx = focusId ? walk.steps.findIndex((s) => s.id === focusId) : -1;
-  const step = idx >= 0 ? walk.steps[idx] : null;
 
   // data-seq lets the client tell "agent advanced" (seq changed) from "same
   // step, just re-rendered" (e.g. a comment was added), which drives the
   // working indicator.
-  const marker = `<div id="focus-marker" data-step-id="${esc(step ? step.id : "")}" data-seq="${seq}" hidden></div>`;
+  const stepAttrs = step ? ` data-has-step="1" data-step-label="${esc(step.progress ?? "")}"` : ` data-has-step=""`;
+  const marker = `<div id="focus-marker" data-seq="${seq}"${stepAttrs} hidden></div>`;
+  const progress = step?.progress ? `<span class="step-count">Step ${esc(step.progress)}</span>` : "";
   const header =
-    `<header class="walk-header"><div class="walk-eyebrow">${esc(walk.title)}</div>` +
-    (step ? `<div class="walk-progress">${progressDots(total, idx)}<span class="step-count">Step ${idx + 1} of ${total}</span></div>` : "") +
+    `<header class="walk-header"><div class="walk-eyebrow">${esc(session.title)}</div>` +
+    (progress ? `<div class="walk-progress">${progress}</div>` : "") +
     `</header>`;
 
   if (!step) {
-    const msg = total ? "Waiting for the next step…" : "This walk has no steps yet.";
-    return `${marker}${header}<div class="empty">${msg}</div>`;
+    return `${marker}${header}<div class="empty">Waiting for the agent to present a step…</div>`;
   }
   return `${marker}${header}${stepSection(step, replies)}`;
-}
-
-/** The whole walk body, all steps (used by the standalone static render). */
-function renderAllSteps(walk: Walk, replies: Reply[]): string {
-  const marker = `<div id="focus-marker" data-step-id="" hidden></div>`;
-  const body = walk.steps.length
-    ? walk.steps.map((s) => stepSection(s, replies)).join("")
-    : `<div class="empty">This walk has no steps yet.</div>`;
-  return `${marker}<header class="walk-header"><h1>${esc(walk.title)}</h1></header>${body}`;
 }
 
 /** Full standalone HTML page shell that live-loads the fragment over SSE. */
@@ -190,22 +166,6 @@ export function renderPage(): string {
 </form>
 <div id="status" class="status">connecting…</div>
 <script>${PAGE_SCRIPT}</script>
-</body>
-</html>`;
-}
-
-/** A fully self-contained static HTML document embedding one rendered walk. */
-export function renderStandalone(walk: Walk, ctx: { replies?: Reply[] } = {}): string {
-  return `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>${esc(walk.title)} — codewalk</title>
-<style>${PAGE_STYLES}</style>
-</head>
-<body>
-<main id="walk">${renderAllSteps(walk, ctx.replies ?? [])}</main>
 </body>
 </html>`;
 }
@@ -391,13 +351,13 @@ let working = false;
 let workingSeq = null;
 
 function marker() { return document.getElementById('focus-marker'); }
-function currentFocusId() { const m = marker(); return m ? (m.getAttribute('data-step-id') || '') : ''; }
+function hasStep() { const m = marker(); return !!(m && m.getAttribute('data-has-step') === '1'); }
+function stepLabel() { const m = marker(); return (m && m.getAttribute('data-step-label')) || null; }
 function currentSeq() { const m = marker(); return m ? (m.getAttribute('data-seq') || '') : ''; }
 function key(c) { return c.file + ':' + c.side + ':' + c.line; }
 
 function syncUI() {
-  const id = currentFocusId();
-  composer.hidden = !id || working;
+  composer.hidden = !hasStep() || working;
   workingEl.hidden = !working;
   const n = pending.length;
   sendBtn.textContent = 'Complete step';
@@ -459,8 +419,7 @@ walkEl.addEventListener('click', (e) => {
 });
 
 async function complete() {
-  const stepId = currentFocusId();
-  if (!stepId || working) return;
+  if (!hasStep() || working) return;
   // Empty + nothing staged means "looks good, continue" — same as the pane.
   const message = input.value.trim() || (pending.length === 0 ? '👍 Looks good — continue.' : '');
   working = true; workingSeq = currentSeq(); activeDraft = null;
@@ -468,7 +427,7 @@ async function complete() {
   try {
     await fetch('/api/reply', {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ message, comments: pending, stepId }),
+      body: JSON.stringify({ message, comments: pending, stepId: stepLabel() }),
     });
     pending = []; input.value = ''; input.style.height = 'auto';
   } catch (e) {
@@ -480,14 +439,14 @@ async function refresh() {
   try {
     const res = await fetch('/fragment', { cache: 'no-store' });
     const html = await res.text();
-    const prevFocus = currentFocusId();
+    const prevSeq = currentSeq();
     const y = window.scrollY;
     walkEl.innerHTML = html;
     // Clear the working state once the agent advances or re-presents (seq changed).
     if (working && currentSeq() !== workingSeq) { working = false; pending = []; }
     renderPending();
-    const newFocus = currentFocusId();
-    if (newFocus && newFocus !== prevFocus) window.scrollTo({ top: 0, behavior: firstLoad ? 'auto' : 'smooth' });
+    // The agent advanced when the sequence bumped — scroll the new step into view.
+    if (hasStep() && currentSeq() !== prevSeq) window.scrollTo({ top: 0, behavior: firstLoad ? 'auto' : 'smooth' });
     else window.scrollTo(0, y);
     firstLoad = false;
   } catch (e) { /* keep last render on transient failure */ }
