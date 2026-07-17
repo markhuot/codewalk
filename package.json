@@ -1,6 +1,6 @@
 {
   "name": "@markhuot/codewalk",
-  "version": "0.1.0",
+  "version": "0.0.0",
   "description": "A CLI that lets an agent narrate a two-way walk through a PR, branch, or code change — rendered inline diffs, per-line comments, and replies that flow back into the conversation.",
   "type": "module",
   "bin": {
