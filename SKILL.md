@@ -18,11 +18,12 @@ The binary is `walk`. During development run it as `bun run <repo>/src/cli.ts <a
    ```
    walk start "PR #17: streaming diff narration"
    ```
-3. **Build a step** — narration and the diff that proves it, together in one step. The prose rides in `--note`; every step shows code. Keep each to one or two files:
+3. **Build a step** — narration and the diff that proves it, together in one step. You supply the diff on stdin (see [Getting diffs](#getting-diffs)); the prose rides in `--note`; every step shows code. Keep each to one file and the smallest hunk that makes the point:
    ```
-   walk diff --pr 17 --files src/walk.ts --title "The new interface" \
+   printf '@@ -40,0 +42,4 @@\n+  if (!process.stdout.isTTY) return;\n+  split(pane);\n+  render(step);\n+  block();\n' \
+     | walk diff --path src/walk.ts --title "The new interface" \
         --note "This makes **live** diff narration possible. Here's the interface a caller uses." \
-        --comment "src/walk.ts:42:this gate short-circuits when there's no TTY"
+        --comment:42 "this gate short-circuits when there's no TTY"
    ```
 4. **Present it and wait for a reply.** This is the heart of the tool — it blocks and prints the human's comment:
    ```
@@ -47,17 +48,18 @@ Other flags: `--no-wait` (present without blocking), `--timeout <sec>` (give up 
 
 ## Getting diffs
 
-`walk diff` accepts one source:
+`walk diff` never fetches — **you** produce the diff and pipe it in on stdin, then name the file with `--path`. Get the hunk however fits: a local `git`/`gh` command, an API/CLI pull from a repo you never cloned, or a hunk you write by hand for a change that doesn't exist yet. This is what lets you walk a remote PR or a *planned* change, not just local work.
 
-| Source | Flag | Notes |
+Two accepted stdin shapes:
+
+| Shape | What you pipe | Notes |
 |---|---|---|
-| GitHub PR | `--pr <n>` | uses `gh pr diff <n>` |
-| git range | `--from <ref> [--to <ref>]` | `from..to`; omit `--to` to diff against the working tree (untracked files included) |
-| staged | `--staged` | `git diff --cached` |
-| raw stdin | `--stdin` | pipe any unified diff: `git show <sha> \| walk diff --stdin` |
-| limit paths | `--files a b ...` | combine with `--from`/`--staged` to scope to specific files |
+| **bare hunk** (the norm) | `@@ -0,0 +47,3 @@` + `+`/`-`/space lines | the `diff --git`/`---`/`+++` envelope is synthesized from `--path`; added/deleted/modified is inferred from the hunk header |
+| **full file diff** | a complete `diff --git …` block | used as-is; the path comes from the diff, so `--path` is optional |
 
-Decorate a diff step with `--title`, `--note "<markdown>"`, and repeatable `--comment "path:line:message"`. **Show the smallest diff that makes the point** — prefer `--files` to focus each step on one or two files. A good walk is a sequence of small, captioned diffs, not one giant dump.
+Author a real hunk header — the `+47` in `@@ -0,0 +47,3 @@` is what makes the gutter start at line 47 instead of 1. To slice one file out of a bigger diff: `gh pr diff 17 -R owner/repo | <keep the one file's hunk> | walk diff --path <file>`.
+
+Decorate a diff step with `--title`, `--note "<markdown>"`, and comments — repeat `--comment "line:message"`, or use `--comment:<line> "message"` (append `:old` for the old side, e.g. `--comment:12:old "…"`). **Show the smallest hunk that makes the point** — one file per step, ~15-20 lines. A good walk is a sequence of small, captioned diffs, not one giant dump.
 
 ## Handling replies
 
@@ -65,7 +67,7 @@ Decorate a diff step with `--title`, `--note "<markdown>"`, and repeatable `--co
 
 ## Other commands
 
-- `walk comment <path> <line> "<msg>" [--side old|new] [--step <id>]` — attach an inline comment to a diff step after the fact.
+- `walk comment <line> "<msg>" [--side old|new] [--step <id>]` — attach an inline comment to a diff step after the fact (the file is taken from the step).
 - `walk reply "<text>"` — record a reply yourself (mostly for tooling/tests).
 - `walk finish "<summary>"` — end the walk: completion screen in the reviewer, then the pane closes; the browser shows an all-reviewed screen. Call this after the final step.
 - `walk render [--format html|ansi] [--out <file>]` — static render of the whole walk (no interaction).
@@ -81,9 +83,9 @@ Decorate a diff step with `--title`, `--note "<markdown>"`, and repeatable `--co
 If a step shows more than ~20 lines of code, assume the human will not read all of it, and treat that as a signal to either split the step or narrate what to look for. When a change is genuinely large, say so and point at the two or three lines that matter rather than dumping the whole thing.
 
 Levers for keeping diffs small:
-- `--files <one file>` — one file per step is the norm, not the exception.
-- `--context <n>` — fewer context lines around each change (default 3). Use `--context 0` or `1` for a tight view.
-- Pre-slice with `--stdin` when you want an exact hunk: `git diff main -- src/foo.ts | <select the lines> | walk diff --stdin`.
+- One file per step (one `--path`) is the norm, not the exception.
+- You control the hunk you pipe in, so pipe only the lines that matter — author a tight `@@` hunk, or slice a region out of a bigger diff before it reaches `walk diff`.
+- For a new/large file, show one region per step: a hunk like `@@ -0,0 +47,18 @@` renders just lines 47-64, with the gutter numbered correctly.
 - Split a big file across several steps, each narrating one region.
 
 ## Style for narration (the `--note` and `--comment` text)

@@ -21,7 +21,7 @@ npm i -g @markhuot/codewalk
 codewalk present        # `walk` is aliased too
 ```
 
-Needs `git` on the PATH; `gh` for `--pr`; and [herdr](https://herdr.dev) or tmux for the `--render pane` reviewer (otherwise use `--render web` or `--render cli`).
+You supply the diff (codewalk doesn't shell out to `git` or `gh`). For the `--render pane` reviewer you need [herdr](https://herdr.dev) or tmux; otherwise use `--render web` or `--render cli`.
 
 ### From source (development)
 
@@ -35,8 +35,10 @@ bun run build              # bundle to dist/cli.js (Node target)
 
 ```sh
 walk start "PR #17: streaming diff narration"
-walk say "This makes **live** diff narration possible. Here's the interface:"
-walk diff --pr 17 --files src/walk.ts --title "The new interface"
+gh pr diff 17 | pick-the-file-you-want | walk diff --path src/walk.ts \
+     --title "The new interface" \
+     --note "This makes **live** diff narration possible." \
+     --comment "42:this gate short-circuits when there's no TTY"
 walk present          # opens a reviewer pane, blocks, prints the human's reply
 # → read the reply, respond, build the next step, present again
 ```
@@ -53,18 +55,24 @@ walk present          # opens a reviewer pane, blocks, prints the human's reply
 
 The reviewer is turn-based: comment on the change on screen, and it advances when the agent presents the next step.
 
-## Diff sources
+## The diff
+
+`walk diff` doesn't fetch anything — you hand it the diff on stdin and it renders it. That keeps codewalk out of the diff-acquisition business: you get the hunk however you like (a local `git`/`gh` command, an API pull from a repo you never cloned, or a hunk you author by hand for a change that doesn't exist yet) and pipe it in.
 
 ```sh
-walk diff --pr 17                      # a GitHub PR (via gh)
-walk diff --from main --to HEAD        # a git range
-walk diff --from HEAD                   # working tree vs HEAD (untracked files included)
-walk diff --staged                     # staged changes
-git show <sha> | walk diff --stdin     # any raw unified diff
-walk diff --from main --files src/a.ts src/b.ts   # scope to files
+# The common case: a bare unified hunk. The file envelope is synthesized from
+# --path, and a real `@@ -0,0 +47,3 @@` renders with the right gutter numbers.
+printf '@@ -0,0 +47,3 @@\n+const a = 1;\n+const b = 2;\n+const c = 3;\n' \
+  | walk diff --path src/foo.ts --title "The new interface"
+
+# Pull one file out of a remote PR you never cloned and narrate it.
+gh pr diff 17 -R owner/repo | extract-one-file | walk diff --path src/walk.ts
+
+# A full `diff --git` is used as-is (the path comes from the diff itself).
+git show <sha> -- src/a.ts | walk diff
 ```
 
-Decorate a diff step: `--title`, `--note "<markdown>"`, and repeatable `--comment "path:line:message"`.
+`--path` is a label, not a file on disk. Decorate a diff step: `--title`, `--note "<markdown>"`, and comments — repeat `--comment "line:message"`, or use `--comment:<line> "message"` (append `:old` for the old side).
 
 ## How it works
 
@@ -82,8 +90,8 @@ Decorate a diff step: `--title`, `--note "<markdown>"`, and repeatable `--commen
 |---|---|
 | `start <title>` | Begin a walk (becomes active). |
 | `say <markdown...>` | Add a narration step. |
-| `diff [source] [--title] [--note] [--comment]` | Add a rendered diff step. |
-| `comment <path> <line> <msg> [--side old\|new] [--step]` | Inline comment on a diff step. |
+| `diff --path <label> [--title] [--note] [--comment]` | Add a rendered diff step (diff piped on stdin). |
+| `comment <line> <msg> [--side old\|new] [--step]` | Inline comment on the latest diff step. |
 | `present [--render pane\|web\|cli] [--step] [--no-wait] [--timeout] [--port] [--open]` | Put a step on stage and block for a reply. |
 | `await [--timeout]` | Block for the next reply without presenting. |
 | `reply <text...> [--step]` | Record a reply (tooling/tests). |

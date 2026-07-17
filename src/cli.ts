@@ -2,7 +2,7 @@
 import { parseArgs } from "node:util";
 import { writeFileSync } from "node:fs";
 import { parseUnifiedDiff } from "./diff/parse.ts";
-import { resolveDiff } from "./diff/sources.ts";
+import { authorDiff, readStdin } from "./diff/author.ts";
 import {
   addStep,
   awaitReply,
@@ -27,7 +27,7 @@ import { serve } from "./server.ts";
 import { present, type RenderTarget } from "./present.ts";
 import { runReviewer } from "./pane.ts";
 import { activeDriver } from "./panes/index.ts";
-import type { Comment, DiffStep, Reply } from "./types.ts";
+import type { Comment, CommentSide, DiffStep, Reply } from "./types.ts";
 
 const HELP = `codewalk — a narrated, back-and-forth walk through a PR / branch / code change.
 
@@ -36,18 +36,16 @@ Usage: walk <command> [options]
 Build a walk:
   start <title>              Begin a new walk (becomes the active walk).
   say <markdown...>          Add a prose/narration step.
-  diff [source] [options]    Add a rendered diff step. Sources:
-       --pr <n>                a GitHub PR, via \`gh pr diff\`
-       --from <ref> [--to <ref>]  a git range (from..to, or against working tree)
-       --staged                staged changes (\`git diff --cached\`)
-       --files <a> <b> ...     limit to paths (combine with --from/--staged)
-       --stdin                 read a raw unified diff from stdin
-     diff options:
+  diff --path <label> [options]  Add a rendered diff step. Pipe the diff on stdin:
+       a bare unified hunk ("@@ -0,0 +47,19 @@" + lines) is the norm — the
+       envelope is synthesized from --path. A full "diff --git" is used as-is.
+       --path <label>          file label for the step (a name, not a path on disk)
        --title <text>          heading shown above the diff
        --note <markdown>       narration shown above the diff
-       --comment <path:line:msg>   inline comment (repeatable; :line optional)
-       --context <n>           lines of context around each change (git -U, default 3)
-  comment <path> <line> <msg>  Attach an inline comment to the latest diff step.
+       --comment <line:msg>    inline comment (repeatable)
+       --comment:<line> <msg>  inline comment, line separate from the message
+                               (append :old for the old side, e.g. --comment:12:old)
+  comment <line> <msg>         Attach an inline comment to the latest diff step.
        [--side old|new] [--step <id>]
 
 Present + converse (the main loop):
@@ -72,8 +70,7 @@ Render + manage:
 
 Examples:
   walk start "PR #17: streaming diff walk"
-  walk say "This change makes **live** diff narration possible."
-  walk diff --pr 17 --files src/walk.ts --title "The new interface"
+  gh pr diff 17 | extract-one-file | walk diff --path src/walk.ts --title "The new interface"
   walk present                       # opens a reviewer pane, waits for a comment
   # → read the reply, respond, build the next step, present again
   walk present --render web --open   # same loop, in the browser
@@ -103,18 +100,41 @@ function printReply(reply: Reply): void {
   console.log("");
 }
 
-function parseCommentSpec(spec: string): Comment {
-  // Format: path:line:message  (message may contain colons)
-  const first = spec.indexOf(":");
-  const second = spec.indexOf(":", first + 1);
-  if (first === -1 || second === -1) {
-    throw new Error(`--comment must be "path:line:message", got "${spec}"`);
+/** A line comment before its file label is known (filled in once --path is parsed). */
+type PartialComment = { line: number; side: CommentSide; body: string };
+
+/** Parse a `--comment "line:message"` value (the message may contain colons). */
+function parseCommentSpec(spec: string): PartialComment {
+  const idx = spec.indexOf(":");
+  if (idx === -1) {
+    throw new Error(`--comment must be "line:message" (or use --comment:<line> "message"), got "${spec}"`);
   }
-  const file = spec.slice(0, first);
-  const line = parseInt(spec.slice(first + 1, second), 10);
-  const body = spec.slice(second + 1);
+  const line = parseInt(spec.slice(0, idx), 10);
+  const body = spec.slice(idx + 1);
   if (Number.isNaN(line)) throw new Error(`--comment line must be a number in "${spec}"`);
-  return { file, line, side: "new", body };
+  return { line, side: "new", body };
+}
+
+/**
+ * Pull `--comment:<line>[:old|new] <message>` pairs out of the raw args before
+ * parseArgs runs (it can't model a colon-suffixed option name). Returns the
+ * comments found plus the remaining args for parseArgs.
+ */
+function extractColonComments(argv: string[]): { comments: PartialComment[]; rest: string[] } {
+  const comments: PartialComment[] = [];
+  const rest: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    const m = argv[i]!.match(/^--comment:(\d+)(?::(old|new))?$/);
+    if (!m) {
+      rest.push(argv[i]!);
+      continue;
+    }
+    const body = argv[i + 1];
+    if (body == null) throw new Error(`${argv[i]} needs a message: ${argv[i]} "your note"`);
+    comments.push({ line: parseInt(m[1]!, 10), side: m[2] === "old" ? "old" : "new", body });
+    i++; // consume the message token
+  }
+  return { comments, rest };
 }
 
 function latestDiffStep(walkId?: string): { walk: ReturnType<typeof loadCurrent>; step: DiffStep } {
@@ -176,38 +196,35 @@ async function main() {
     }
 
     case "diff": {
+      const { comments: colonComments, rest: diffArgs } = extractColonComments(rest);
       const { values } = parseArgs({
-        args: rest,
+        args: diffArgs,
         options: {
-          pr: { type: "string" },
-          from: { type: "string" },
-          to: { type: "string" },
-          staged: { type: "boolean", default: false },
-          stdin: { type: "boolean", default: false },
-          files: { type: "string", multiple: true },
+          path: { type: "string" },
           title: { type: "string" },
           note: { type: "string" },
           comment: { type: "string", multiple: true },
-          context: { type: "string" },
         },
         allowPositionals: true,
       });
 
-      const raw = await resolveDiff({
-        pr: values.pr as string | undefined,
-        from: values.from as string | undefined,
-        to: values.to as string | undefined,
-        staged: values.staged as boolean,
-        stdin: values.stdin as boolean,
-        files: values.files as string[] | undefined,
-        context: values.context != null ? parseInt(values.context as string, 10) : undefined,
-      });
+      const path = (values.path as string | undefined)?.trim();
+      if (process.stdin.isTTY) {
+        throw new Error(
+          'Pipe a unified hunk on stdin, e.g.  printf \'@@ -0,0 +1,2 @@\\n+a\\n+b\\n\' | walk diff --path foo.ts',
+        );
+      }
+      const raw = authorDiff(path ?? "", await readStdin());
 
       const files = parseUnifiedDiff(raw);
       if (files.length === 0) {
-        throw new Error("No changes found for that diff source.");
+        throw new Error("No changes found — is the diff body a valid unified hunk?");
       }
-      const comments = ((values.comment as string[] | undefined) ?? []).map(parseCommentSpec);
+      // Comments anchor to the step's file by label; --path is that label (falling
+      // back to the path parsed from a full diff that was piped through).
+      const label = path ?? files[0]!.newPath ?? files[0]!.oldPath ?? "";
+      const stringComments = ((values.comment as string[] | undefined) ?? []).map(parseCommentSpec);
+      const comments: Comment[] = [...colonComments, ...stringComments].map((c) => ({ ...c, file: label }));
       const walk = loadCurrent();
       const step: DiffStep = {
         kind: "diff",
@@ -233,13 +250,15 @@ async function main() {
         },
         allowPositionals: true,
       });
-      const [file, lineStr, ...msg] = positionals;
+      const [lineStr, ...msg] = positionals;
       const body = msg.join(" ");
-      if (!file || !lineStr || !body) {
-        throw new Error('comment needs: walk comment <path> <line> "<message>"');
+      if (!lineStr || !body) {
+        throw new Error('comment needs: walk comment <line> "<message>"');
       }
       const side = values.side === "old" ? "old" : "new";
       const { walk, step } = latestDiffStep(values.step as string | undefined);
+      const file = step.files[0]?.newPath || step.files[0]?.oldPath;
+      if (!file) throw new Error("that step has no file to comment on.");
       step.comments.push({ file, line: parseInt(lineStr, 10), side, body });
       saveWalk(walk);
       console.log(`Added comment on ${file}:${lineStr} (${side}) to step ${step.id}.`);
