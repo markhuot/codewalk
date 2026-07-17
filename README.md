@@ -8,12 +8,28 @@ The agent pulls the diff (`gh`, `git`, or raw input), builds a narrated sequence
 
 ## Install
 
+Run it with no install via npx (needs Node ≥ 18):
+
 ```sh
-bun install
-bun link          # optional: makes `walk` available globally
+npx @markhuot/codewalk present
 ```
 
-Without `bun link`, run any command as `bun run src/cli.ts <args>`.
+Or install it globally:
+
+```sh
+npm i -g @markhuot/codewalk
+codewalk present        # `walk` is aliased too
+```
+
+Needs `git` on the PATH; `gh` for `--pr`; and [herdr](https://herdr.dev) or tmux for the `--render pane` reviewer (otherwise use `--render web` or `--render cli`).
+
+### From source (development)
+
+```sh
+bun install
+bun run src/cli.ts <args>   # or: bun run walk <args>
+bun run build              # bundle to dist/cli.js (Node target)
+```
 
 ## The loop
 

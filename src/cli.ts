@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { parseArgs } from "node:util";
+import { writeFileSync } from "node:fs";
 import { parseUnifiedDiff } from "./diff/parse.ts";
 import { resolveDiff } from "./diff/sources.ts";
 import {
@@ -377,7 +378,7 @@ async function main() {
       if (values.format === "html") output = renderStandalone(walk, { replies: listReplies() });
       else output = renderTerminal(walk); // ansi/md both go through the text renderer
       if (values.out) {
-        await Bun.write(values.out as string, output);
+        writeFileSync(values.out as string, output);
         console.log(`Wrote ${values.out}`);
       } else {
         process.stdout.write(output + "\n");

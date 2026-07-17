@@ -1,5 +1,17 @@
 // Ways to obtain a unified diff: local git, a GitHub PR via `gh`, or raw input.
 
+import { spawnSync } from "node:child_process";
+
+function readStdin(): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let data = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (c) => (data += c));
+    process.stdin.on("end", () => resolve(data));
+    process.stdin.on("error", reject);
+  });
+}
+
 export interface DiffSourceOptions {
   staged?: boolean;
   from?: string;
@@ -12,24 +24,29 @@ export interface DiffSourceOptions {
   context?: number;
 }
 
+function exec(cmd: string[]): { status: number; stdout: string; stderr: string } {
+  const proc = spawnSync(cmd[0]!, cmd.slice(1), { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  return { status: proc.status ?? 1, stdout: proc.stdout ?? "", stderr: proc.stderr ?? "" };
+}
+
 function run(cmd: string[]): string {
-  const proc = Bun.spawnSync(cmd, { stdout: "pipe", stderr: "pipe" });
-  if (proc.exitCode !== 0) {
-    const err = proc.stderr.toString().trim() || proc.stdout.toString().trim();
-    throw new Error(`\`${cmd.join(" ")}\` failed (exit ${proc.exitCode}): ${err}`);
+  const proc = exec(cmd);
+  if (proc.status !== 0) {
+    const err = proc.stderr.trim() || proc.stdout.trim();
+    throw new Error(`\`${cmd.join(" ")}\` failed (exit ${proc.status}): ${err}`);
   }
-  return proc.stdout.toString();
+  return proc.stdout;
 }
 
 // `git diff --no-index` reports "differences found" with exit code 1, which is
 // success for our purposes. Tolerate 0 and 1; anything else is a real error.
 function runDiff(cmd: string[]): string {
-  const proc = Bun.spawnSync(cmd, { stdout: "pipe", stderr: "pipe" });
-  if (proc.exitCode !== 0 && proc.exitCode !== 1) {
-    const err = proc.stderr.toString().trim() || proc.stdout.toString().trim();
-    throw new Error(`\`${cmd.join(" ")}\` failed (exit ${proc.exitCode}): ${err}`);
+  const proc = exec(cmd);
+  if (proc.status !== 0 && proc.status !== 1) {
+    const err = proc.stderr.trim() || proc.stdout.trim();
+    throw new Error(`\`${cmd.join(" ")}\` failed (exit ${proc.status}): ${err}`);
   }
-  return proc.stdout.toString();
+  return proc.stdout;
 }
 
 /**
@@ -59,7 +76,7 @@ export async function resolveDiff(opts: DiffSourceOptions): Promise<string> {
   if (opts.raw != null) return opts.raw;
 
   if (opts.stdin) {
-    return await Bun.stdin.text();
+    return await readStdin();
   }
 
   if (opts.pr) {

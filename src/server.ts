@@ -1,3 +1,4 @@
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { watch } from "node:fs";
 import {
   addCommentToStep,
@@ -10,9 +11,8 @@ import {
   stateDir,
   writeReply,
 } from "./store.ts";
-import type { LineComment } from "./types.ts";
 import { renderFragment, renderPage } from "./render/html.ts";
-import type { Walk } from "./types.ts";
+import type { LineComment, Walk } from "./types.ts";
 
 function activeWalk(): Walk | null {
   const id = currentId();
@@ -24,23 +24,30 @@ function activeWalk(): Walk | null {
   }
 }
 
+function readBody(req: IncomingMessage): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let data = "";
+    req.on("data", (c) => (data += c));
+    req.on("end", () => resolve(data));
+    req.on("error", reject);
+  });
+}
+
 export function serve(port: number): { port: number; stop: () => void } {
-  const clients = new Set<ReadableStreamDefaultController>();
-  const encoder = new TextEncoder();
+  const clients = new Set<ServerResponse>();
 
   const broadcast = () => {
-    for (const ctrl of clients) {
+    for (const res of clients) {
       try {
-        ctrl.enqueue(encoder.encode(`event: update\ndata: 1\n\n`));
+        res.write(`event: update\ndata: 1\n\n`);
       } catch {
-        clients.delete(ctrl);
+        clients.delete(res);
       }
     }
   };
 
-  // Watch the state directory (recursively, so the replies/ subdir counts) so
-  // any CLI mutation — a new step, a comment, a reply, a focus change — pushes a
-  // live update to every connected browser.
+  // Watch the state directory (recursively, so replies/ counts) so any CLI
+  // mutation pushes a live update to every connected browser.
   let debounce: ReturnType<typeof setTimeout> | null = null;
   const watcher = watch(stateDir(), { recursive: true }, () => {
     if (debounce) clearTimeout(debounce);
@@ -49,86 +56,84 @@ export function serve(port: number): { port: number; stop: () => void } {
 
   const fragment = () => renderFragment(activeWalk(), { focus: getFocus(), replies: listReplies() });
 
-  const server = Bun.serve({
-    port,
-    idleTimeout: 0,
-    async fetch(req) {
-      const url = new URL(req.url);
+  const html = (res: ServerResponse, body: string, cache = true) => {
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8", ...(cache ? {} : { "cache-control": "no-store" }) });
+    res.end(body);
+  };
+  const json = (res: ServerResponse, status: number, obj: unknown) => {
+    res.writeHead(status, { "content-type": "application/json" });
+    res.end(JSON.stringify(obj));
+  };
 
-      if (url.pathname === "/") {
-        return new Response(renderPage(), { headers: { "content-type": "text/html; charset=utf-8" } });
-      }
+  const server = createServer(async (req, res) => {
+    const url = new URL(req.url ?? "/", "http://localhost");
+    const path = url.pathname;
 
-      if (url.pathname === "/fragment") {
-        return new Response(fragment(), {
-          headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
-        });
-      }
+    if (path === "/") return html(res, renderPage());
+    if (path === "/fragment") return html(res, fragment(), false);
+    if (path === "/api/health") return json(res, 200, { codewalk: true, pid: process.pid });
+    if (path === "/api/walk") return json(res, 200, activeWalk());
 
-      // Identity endpoint so a launcher can tell *our* server apart from some
-      // unrelated process that happens to hold the port.
-      if (url.pathname === "/api/health") {
-        return Response.json({ codewalk: true, pid: process.pid });
-      }
-
-      if (url.pathname === "/api/walk") {
-        return Response.json(activeWalk());
-      }
-
-      // The browser "complete step" POSTs a submission here: an overall message
-      // plus any staged line comments. It lands in the same inbox a pane reply
-      // would, so the agent's blocking `walk await` picks it up in one turn.
-      if (url.pathname === "/api/reply" && req.method === "POST") {
-        try {
-          const body = (await req.json()) as { text?: string; message?: string; stepId?: string | null; comments?: LineComment[] };
-          const message = (body.message ?? body.text ?? "").trim();
-          const comments = Array.isArray(body.comments) ? body.comments : [];
-          if (!message && comments.length === 0) return Response.json({ ok: false, error: "empty" }, { status: 400 });
-          const stepId = body.stepId ?? null;
-          // Persist each line comment inline on the step so it renders on its line.
-          if (stepId) {
-            for (const c of comments) {
-              const label = c.endLine && c.endLine > c.line ? `(lines ${c.line}–${c.endLine}) ${c.text}` : c.text;
-              addCommentToStep(stepId, { file: c.file, line: c.line, side: c.side, body: label });
-            }
+    // The browser "complete step" POSTs a submission: a message plus staged line
+    // comments. It lands in the same inbox a pane reply would.
+    if (path === "/api/reply" && req.method === "POST") {
+      try {
+        const data = JSON.parse((await readBody(req)) || "{}") as {
+          text?: string;
+          message?: string;
+          stepId?: string | null;
+          comments?: LineComment[];
+        };
+        const message = (data.message ?? data.text ?? "").trim();
+        const comments = Array.isArray(data.comments) ? data.comments : [];
+        if (!message && comments.length === 0) return json(res, 400, { ok: false, error: "empty" });
+        const stepId = data.stepId ?? null;
+        if (stepId) {
+          for (const c of comments) {
+            const label = c.endLine && c.endLine > c.line ? `(lines ${c.line}–${c.endLine}) ${c.text}` : c.text;
+            addCommentToStep(stepId, { file: c.file, line: c.line, side: c.side, body: label });
           }
-          const reply = writeReply(message, { stepId, source: "web", comments });
-          return Response.json({ ok: true, reply });
-        } catch (e) {
-          return Response.json({ ok: false, error: String(e) }, { status: 400 });
         }
+        const reply = writeReply(message, { stepId, source: "web", comments });
+        return json(res, 200, { ok: true, reply });
+      } catch (e) {
+        return json(res, 400, { ok: false, error: String(e) });
       }
+    }
 
-      if (url.pathname === "/events") {
-        const stream = new ReadableStream({
-          start(ctrl) {
-            clients.add(ctrl);
-            ctrl.enqueue(encoder.encode(`event: update\ndata: hello\n\n`));
-          },
-          cancel() {
-            /* client list is pruned lazily on failed enqueue */
-          },
-        });
-        return new Response(stream, {
-          headers: {
-            "content-type": "text/event-stream",
-            "cache-control": "no-cache",
-            connection: "keep-alive",
-          },
-        });
-      }
+    if (path === "/events") {
+      res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
+      req.socket.setTimeout(0); // never time out a long-lived SSE connection
+      res.write(`event: update\ndata: hello\n\n`);
+      clients.add(res);
+      req.on("close", () => clients.delete(res));
+      return;
+    }
 
-      return new Response("not found", { status: 404 });
-    },
+    res.writeHead(404, { "content-type": "text/plain" });
+    res.end("not found");
   });
 
-  setServerInfo({ port: server.port ?? port, pid: process.pid });
+  server.requestTimeout = 0; // don't kill the SSE stream
+  server.on("error", (err) => {
+    console.error(`codewalk server: ${err.message}`);
+    process.exit(1);
+  });
+  server.listen(port);
+  setServerInfo({ port, pid: process.pid });
 
   return {
-    port: server.port ?? port,
+    port,
     stop: () => {
       watcher.close();
-      server.stop(true);
+      for (const res of clients) {
+        try {
+          res.end();
+        } catch {
+          /* ignore */
+        }
+      }
+      server.close();
       clearServerInfo();
     },
   };

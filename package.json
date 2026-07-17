@@ -1,26 +1,52 @@
 {
-  "name": "codewalk",
+  "name": "@markhuot/codewalk",
   "version": "0.1.0",
-  "description": "A CLI that lets an LLM narrate a walk through a PR / branch / code change with rendered inline diffs.",
+  "description": "A CLI that lets an agent narrate a two-way walk through a PR, branch, or code change — rendered inline diffs, per-line comments, and replies that flow back into the conversation.",
   "type": "module",
   "bin": {
-    "walk": "./src/cli.ts"
+    "codewalk": "./dist/cli.js",
+    "walk": "./dist/cli.js"
   },
+  "files": [
+    "dist",
+    "SKILL.md",
+    "README.md"
+  ],
   "scripts": {
+    "build": "bun run scripts/build.ts",
     "walk": "bun run src/cli.ts",
     "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "bun run build && bun run typecheck && bun test"
   },
-  "dependencies": {
-    "cli-highlight": "^2.1.11",
-    "highlight.js": "^11.11.1",
-    "marked": "^12.0.0"
+  "keywords": [
+    "cli",
+    "code-review",
+    "diff",
+    "pr",
+    "walkthrough",
+    "agent",
+    "llm",
+    "tui"
+  ],
+  "author": "Mark Huot",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/markhuot/codewalk.git"
+  },
+  "homepage": "https://github.com/markhuot/codewalk#readme",
+  "bugs": {
+    "url": "https://github.com/markhuot/codewalk/issues"
   },
   "devDependencies": {
     "@types/bun": "latest",
+    "cli-highlight": "^2.1.11",
+    "highlight.js": "^11.11.1",
+    "marked": "^12.0.0",
     "typescript": "^5.5.0"
   },
   "engines": {
-    "bun": ">=1.1.0"
+    "node": ">=18"
   }
 }
