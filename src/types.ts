@@ -97,6 +97,9 @@ export type ReplySource = "pane" | "web" | "cli";
 export interface Reply {
   id: string;
   at: string;
+  /** The focus sequence the reply was left under — i.e. which staged step it
+   * belongs to. Only replies matching the current focus seq are displayed. */
+  seq: number;
   /** The step's progress label when they replied (best-effort context). */
   stepId: string | null;
   /** The overall message ("" when the submission is only line comments). */

@@ -268,12 +268,13 @@ main { max-width: 980px; margin: 0 auto; padding: 24px 20px 140px; }
 .comment-row .comment { padding: 8px; }
 .comment-box { background: var(--comment-bg); border: 1px solid var(--comment-border); border-radius: 6px; padding: 8px 12px; font-family: -apple-system, sans-serif; white-space: normal; }
 .comment-anchor { display: block; font-size: 11px; color: var(--muted); font-family: ui-monospace, monospace; margin-bottom: 4px; }
+.comment-body { white-space: pre-wrap; }
 .comment-body code { background: rgba(127,127,127,.15); padding: .1em .35em; border-radius: 4px; }
 .reply-thread { margin: 12px 0 0; display: flex; flex-direction: column; gap: 8px; }
 .reply { background: var(--reply-bg); border: 1px solid var(--reply-border); border-radius: 8px; padding: 8px 12px; }
 .reply-who { display: block; font-size: 11px; font-weight: 600; color: var(--accent); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 3px; }
 .reply-anchor { font-family: ui-monospace, monospace; text-transform: none; color: var(--muted); font-weight: 500; }
-.reply-body { white-space: normal; }
+.reply-body { white-space: pre-wrap; }
 .reply-body code { background: rgba(127,127,127,.15); padding: .1em .35em; border-radius: 4px; }
 .binary { padding: 16px; color: var(--muted); font-style: italic; }
 .empty { padding: 48px 0; color: var(--muted); text-align: center; }

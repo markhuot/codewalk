@@ -1,4 +1,4 @@
-import { mkdirSync, existsSync, readFileSync, writeFileSync, readdirSync, watch } from "node:fs";
+import { mkdirSync, existsSync, readFileSync, writeFileSync, readdirSync, rmSync, watch } from "node:fs";
 import { join } from "node:path";
 import type { Comment, Focus, LineAnchor, LineComment, Reply, ReplySource, Session, Step } from "./types.ts";
 
@@ -19,6 +19,9 @@ function sessionPath(): string {
 
 export function createSession(title: string): Session {
   ensureDir();
+  // Start clean: drop any prior walk's replies, cursor, and focus so a fresh
+  // walk (or a re-run after editing the code) never shows stale comments.
+  resetConversation();
   const session: Session = {
     title,
     createdAt: new Date().toISOString(),
@@ -26,6 +29,18 @@ export function createSession(title: string): Session {
   };
   saveSession(session);
   return session;
+}
+
+/** Clear the reply inbox, its cursor, and the focus pointer. */
+function resetConversation(): void {
+  const dir = stateDir();
+  for (const name of ["replies", "reply-cursor", "focus.json"]) {
+    try {
+      rmSync(join(dir, name), { recursive: true, force: true });
+    } catch {
+      /* nothing to clear */
+    }
+  }
 }
 
 export function saveSession(session: Session): void {
@@ -89,10 +104,13 @@ export function writeReply(
 ): Reply {
   ensureDir();
   const dir = repliesDir();
-  const seq = readdirSync(dir).filter((f) => f.endsWith(".json")).length + 1;
+  const n = readdirSync(dir).filter((f) => f.endsWith(".json")).length + 1;
   const reply: Reply = {
-    id: `r-${seq}-${process.pid.toString(36)}`,
+    id: `r-${n}-${process.pid.toString(36)}`,
     at: new Date().toISOString(),
+    // Stamp the focus sequence so the reviewer shows this reply only while its
+    // step is on stage; the next present bumps the seq and it drops from view.
+    seq: getFocus()?.seq ?? 0,
     stepId: opts.stepId ?? null,
     text,
     source: opts.source ?? "cli",
@@ -118,6 +136,12 @@ export function listReplies(): Reply[] {
     })
     .filter((r): r is Reply => r != null)
     .sort((a, b) => replyKey(a).localeCompare(replyKey(b)));
+}
+
+/** Replies left on the step currently on stage (matched by the focus sequence). */
+export function currentReplies(): Reply[] {
+  const seq = getFocus()?.seq ?? 0;
+  return listReplies().filter((r) => r.seq === seq);
 }
 
 function readCursor(): string {

@@ -3,9 +3,9 @@ import { watch } from "node:fs";
 import {
   addCommentToCurrentStep,
   clearServerInfo,
+  currentReplies,
   getFocus,
   getSession,
-  listReplies,
   setServerInfo,
   stateDir,
   writeReply,
@@ -43,7 +43,7 @@ export function serve(port: number): { port: number; stop: () => void } {
     debounce = setTimeout(broadcast, 60);
   });
 
-  const fragment = () => renderFragment(getSession(), { focus: getFocus(), replies: listReplies() });
+  const fragment = () => renderFragment(getSession(), { focus: getFocus(), replies: currentReplies() });
 
   const html = (res: ServerResponse, body: string, cache = true) => {
     res.writeHead(200, { "content-type": "text/html; charset=utf-8", ...(cache ? {} : { "cache-control": "no-store" }) });

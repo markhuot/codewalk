@@ -20,10 +20,10 @@ The binary is `walk`. During development run it as `bun run <repo>/src/cli.ts <a
    ```
 3. **Present a step** — one call builds the step from the diff you pipe in, puts it on stage, and blocks until the human replies (the reply prints to stdout). The prose rides in `--note`; every step shows code; keep each to one file and the smallest hunk that makes the point:
    ```
-   printf '@@ -40,0 +42,4 @@\n+  if (!process.stdout.isTTY) return;\n+  split(pane);\n+  render(step);\n+  block();\n' \
-     | walk present --path src/walk.ts --title "The new interface" --step 1/4 \
+   printf -- '--- a/src/walk.ts\n+++ b/src/walk.ts\n@@ -40,0 +42,4 @@\n+  if (!process.stdout.isTTY) return;\n+  split(pane);\n+  render(step);\n+  block();\n' \
+     | walk present --title "The new interface" --step 1/4 \
         --note "This makes **live** diff narration possible. Here's the interface a caller uses." \
-        --comment:42 "this gate short-circuits when there's no TTY"
+        --comment "42:this gate short-circuits when there's no TTY"
    ```
    Read what comes back, answer it in chat, then build and present the next step. Repeat until the walk is done.
 4. **Finish the walk.** After the last step's reply, call `walk finish "<optional one-line summary>"`. The reviewer shows a completion screen and the pane closes itself; the browser shows an "all steps reviewed" screen. Don't leave a walk dangling on its final step — always finish it so the ending feels deliberate.
@@ -44,29 +44,25 @@ Other flags: `--no-wait` (present without blocking), `--timeout <sec>` (give up 
 
 ## Getting diffs
 
-`walk present` never fetches — **you** produce the diff and pipe it in on stdin, then name the file with `--path`. Get the hunk however fits: a local `git`/`gh` command, an API/CLI pull from a repo you never cloned, or a hunk you write by hand for a change that doesn't exist yet. This is what lets you walk a remote PR or a *planned* change, not just local work.
+`walk present` never fetches — **you** produce a unified diff and pipe it in on stdin. Get it however fits: a local `git`/`gh` command, an API/CLI pull from a repo you never cloned, or one you write by hand for a change that doesn't exist yet. This is what lets you walk a remote PR or a *planned* change, not just local work.
 
-Two accepted stdin shapes:
+The diff carries its own path in the `---`/`+++` header — there's one input shape and no `--path` flag. The `+47` in `@@ -0,0 +47,3 @@` is what makes the gutter start at line 47 instead of 1; the `---`/`+++` markers say whether the file is added (`--- /dev/null`), deleted (`+++ /dev/null`), or modified (`--- a/x` / `+++ b/x`).
 
-| Shape | What you pipe | Notes |
-|---|---|---|
-| **bare hunk** (the norm) | `@@ -0,0 +47,3 @@` + `+`/`-`/space lines | the `diff --git`/`---`/`+++` envelope is synthesized from `--path`; added/deleted/modified is inferred from the hunk header |
-| **full file diff** | a complete `diff --git …` block | used as-is; the path comes from the diff, so `--path` is optional |
-
-Author a real hunk header — the `+47` in `@@ -0,0 +47,3 @@` is what makes the gutter start at line 47 instead of 1. To slice one file out of a bigger diff: `gh pr diff 17 -R owner/repo | <keep the one file's hunk> | walk present --path <file>`.
-
-**Build the hunk inline; never write a temporary helper script.** Producing a hunk is a one-liner with standard tools, right in the command — don't create a `slice.mjs` / `hunk.sh` scratch file to do it. Pipe a real diff when you have one, or construct a bare hunk from a file on disk with `sed`:
+**Build the diff inline; never write a temporary helper script.** It's a one-liner with standard tools, right in the command — don't create a `slice.mjs` / `hunk.sh` scratch file. Pipe a real diff when you have one, or slice a region of a file on disk by adding the header yourself:
 
 ```sh
-# A real change: let git/gh emit the hunk, pipe it straight in.
-git diff HEAD -- src/cli.ts | walk present --path src/cli.ts --title "…"
+# A real change: let git/gh emit the diff, pipe it straight in.
+git diff HEAD -- src/cli.ts | walk present --title "…"
 
-# Showing a region of an existing file as an added block: prefix with sed, no script.
-{ echo "@@ -0,0 +41,31 @@"; sed -n '41,71p' src/diff/author.ts | sed 's/^/+/'; } \
-  | walk present --path src/diff/author.ts --title "…"
+# One file out of a bigger diff.
+gh pr diff 17 -R owner/repo | <keep the one file's hunk> | walk present --title "…"
+
+# A region of an existing file as an added block: header + sed, no script.
+{ printf '%s\n' '--- /dev/null' '+++ b/src/diff/input.ts' '@@ -0,0 +41,31 @@'; \
+  sed -n '41,71p' src/diff/input.ts | sed 's/^/+/'; } | walk present --title "…"
 ```
 
-Decorate the step with `--title`, `--note "<markdown>"`, `--step <n/total>`, and comments — repeat `--comment "line:message"`, or use `--comment:<line> "message"` (append `:old` for the old side, e.g. `--comment:12:old "…"`). **Show the smallest hunk that makes the point** — one file per step, ~15-20 lines. A good walk is a sequence of small, captioned diffs, not one giant dump.
+Decorate the step with `--title`, `--note "<markdown>"`, `--step <n/total>`, and repeatable `--comment "line:message"` (the message may contain colons). A comment (and a note) may span multiple lines — pass a real newline, e.g. bash `$'42:first line\nsecond line'`; all three targets preserve the breaks. **Show the smallest hunk that makes the point** — one file per step, ~15-20 lines. A good walk is a sequence of small, captioned diffs, not one giant dump.
 
 ## Handling replies
 
@@ -89,7 +85,7 @@ Decorate the step with `--title`, `--note "<markdown>"`, `--step <n/total>`, and
 If a step shows more than ~20 lines of code, assume the human will not read all of it, and treat that as a signal to either split the step or narrate what to look for. When a change is genuinely large, say so and point at the two or three lines that matter rather than dumping the whole thing.
 
 Levers for keeping diffs small:
-- One file per step (one `--path`) is the norm, not the exception.
+- One file per step is the norm, not the exception.
 - You control the hunk you pipe in, so pipe only the lines that matter — author a tight `@@` hunk, or slice a region out of a bigger diff before it reaches `walk present`.
 - For a new/large file, show one region per step: a hunk like `@@ -0,0 +47,18 @@` renders just lines 47-64, with the gutter numbered correctly.
 - Split a big file across several steps, each narrating one region.

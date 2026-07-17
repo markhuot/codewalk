@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { parseArgs } from "node:util";
 import { parseUnifiedDiff } from "./diff/parse.ts";
-import { authorDiff, readStdin } from "./diff/author.ts";
+import { readStdin, requireUnifiedDiff } from "./diff/input.ts";
 import {
   awaitReply,
   clearServerInfo,
@@ -18,7 +18,7 @@ import { serve } from "./server.ts";
 import { present, type RenderTarget } from "./present.ts";
 import { runReviewer } from "./pane.ts";
 import { activeDriver } from "./panes/index.ts";
-import type { Comment, CommentSide, DiffStep, Reply } from "./types.ts";
+import type { Comment, DiffStep, Reply } from "./types.ts";
 
 const HELP = `codewalk — a narrated, back-and-forth walk through a PR / branch / code change.
 
@@ -26,18 +26,14 @@ Usage: walk <command> [options]
 
 The loop:
   start <title>              Begin a walk (one active session; no stored backlog).
-  present --path <label> [options]  Build ONE step from the diff piped on stdin,
-       put it on stage, and BLOCK until the human replies (reply printed to
-       stdout so it flows back into the conversation). Author the next step and
-       present again — the tool holds only the step on stage, so you advance live.
-       Pipe a bare unified hunk ("@@ -0,0 +47,19 @@" + lines) — the envelope is
-       synthesized from --path; a full "diff --git" is used as-is.
-       --path <label>          file label for the step (a name, not a path on disk)
+  present [options]          Build ONE step from the diff piped on stdin, put it
+       on stage, and BLOCK until the human replies (reply printed to stdout so it
+       flows back into the conversation). Author the next step and present again —
+       the tool holds only the step on stage, so you advance live. Pipe a unified
+       diff (it carries its own path in the ---/+++ header; no --path flag).
        --title <text>          heading shown above the diff
        --note <markdown>       narration shown above the diff
-       --comment <line:msg>    inline comment (repeatable)
-       --comment:<line> <msg>  inline comment, line separate from the message
-                               (append :old for the old side, e.g. --comment:12:old)
+       --comment <line:msg>    inline comment on a line (repeatable)
        --step <n/total>        cosmetic progress label shown in the reviewer (e.g. 1/4)
        --render pane|web|cli   reviewer target (default: pane inside herdr, else cli)
        --no-wait               present without blocking
@@ -56,10 +52,10 @@ Manage:
 
 Examples:
   walk start "PR #17: streaming diff walk"
-  gh pr diff 17 | extract-one-file \\
-    | walk present --path src/walk.ts --title "The new interface" --step 1/4
+  gh pr diff 17 -R owner/repo | extract-one-file \\
+    | walk present --title "The new interface" --step 1/4
   # → read the reply, build the next step, present again
-  ... | walk present --path src/walk.ts --render web --open   # same loop, in the browser
+  git diff HEAD -- src/walk.ts | walk present --render web --open   # same loop, in the browser
 `;
 
 const useColor = process.stdout.isTTY === true && !process.env.NO_COLOR;
@@ -85,41 +81,16 @@ function printReply(reply: Reply): void {
   console.log("");
 }
 
-/** A line comment before its file label is known (filled in once --path is parsed). */
-type PartialComment = { line: number; side: CommentSide; body: string };
-
-/** Parse a `--comment "line:message"` value (the message may contain colons). */
-function parseCommentSpec(spec: string): PartialComment {
+/** Parse a repeatable `--comment "line:message"` value (the message may contain colons). */
+function parseCommentSpec(spec: string): { line: number; body: string } {
   const idx = spec.indexOf(":");
   if (idx === -1) {
-    throw new Error(`--comment must be "line:message" (or use --comment:<line> "message"), got "${spec}"`);
+    throw new Error(`--comment must be "line:message", got "${spec}"`);
   }
   const line = parseInt(spec.slice(0, idx), 10);
   const body = spec.slice(idx + 1);
   if (Number.isNaN(line)) throw new Error(`--comment line must be a number in "${spec}"`);
-  return { line, side: "new", body };
-}
-
-/**
- * Pull `--comment:<line>[:old|new] <message>` pairs out of the raw args before
- * parseArgs runs (it can't model a colon-suffixed option name). Returns the
- * comments found plus the remaining args for parseArgs.
- */
-function extractColonComments(argv: string[]): { comments: PartialComment[]; rest: string[] } {
-  const comments: PartialComment[] = [];
-  const rest: string[] = [];
-  for (let i = 0; i < argv.length; i++) {
-    const m = argv[i]!.match(/^--comment:(\d+)(?::(old|new))?$/);
-    if (!m) {
-      rest.push(argv[i]!);
-      continue;
-    }
-    const body = argv[i + 1];
-    if (body == null) throw new Error(`${argv[i]} needs a message: ${argv[i]} "your note"`);
-    comments.push({ line: parseInt(m[1]!, 10), side: m[2] === "old" ? "old" : "new", body });
-    i++; // consume the message token
-  }
-  return { comments, rest };
+  return { line, body };
 }
 
 async function main() {
@@ -163,11 +134,9 @@ async function main() {
     }
 
     case "present": {
-      const { comments: colonComments, rest: presentArgs } = extractColonComments(rest);
       const { values } = parseArgs({
-        args: presentArgs,
+        args: rest,
         options: {
-          path: { type: "string" },
           title: { type: "string" },
           note: { type: "string" },
           comment: { type: "string", multiple: true },
@@ -184,22 +153,21 @@ async function main() {
 
       // Build the one step from the piped diff, then stage it. There's no stored
       // backlog: this overwrites whatever step was on stage.
-      const path = (values.path as string | undefined)?.trim();
       if (process.stdin.isTTY) {
         throw new Error(
-          'Pipe a unified hunk on stdin, e.g.  printf \'@@ -0,0 +1,2 @@\\n+a\\n+b\\n\' | walk present --path foo.ts',
+          "Pipe a unified diff on stdin, e.g.  git diff HEAD -- src/foo.ts | walk present",
         );
       }
-      const raw = authorDiff(path ?? "", await readStdin());
+      const raw = requireUnifiedDiff(await readStdin());
       const files = parseUnifiedDiff(raw);
       if (files.length === 0) {
-        throw new Error("No changes found — is the diff body a valid unified hunk?");
+        throw new Error("No changes found — is the diff body a valid unified diff?");
       }
-      // Comments anchor to the step's file by label; --path is that label (falling
-      // back to the path parsed from a full diff that was piped through).
-      const label = path ?? files[0]!.newPath ?? files[0]!.oldPath ?? "";
-      const stringComments = ((values.comment as string[] | undefined) ?? []).map(parseCommentSpec);
-      const comments: Comment[] = [...colonComments, ...stringComments].map((c) => ({ ...c, file: label }));
+      // Comments anchor to the step's file by the path in the diff header.
+      const label = files[0]!.newPath || files[0]!.oldPath || "";
+      const comments: Comment[] = ((values.comment as string[] | undefined) ?? [])
+        .map(parseCommentSpec)
+        .map((c) => ({ file: label, line: c.line, side: "new", body: c.body }));
       const step: DiffStep = {
         kind: "diff",
         title: values.title as string | undefined,

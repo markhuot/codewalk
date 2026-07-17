@@ -118,4 +118,25 @@ describe("focus pointer", () => {
     expect(s.setFocus().seq).toBe(2);
     expect(s.getFocus()?.seq).toBe(2);
   });
+
+  test("currentReplies shows only replies left under the current step's focus", async () => {
+    const s = await store();
+    s.setFocus(); // step 1 on stage (seq 1)
+    s.writeReply("on step one");
+    s.setFocus(); // step 2 on stage (seq 2)
+    s.writeReply("on step two");
+    // Both are in the inbox for the agent to consume…
+    expect(s.listReplies()).toHaveLength(2);
+    // …but the reviewer only shows the current step's.
+    expect(s.currentReplies().map((r) => r.text)).toEqual(["on step two"]);
+  });
+
+  test("createSession clears the prior walk's replies and focus", async () => {
+    const s = await store();
+    s.setFocus();
+    s.writeReply("stale from a prior run");
+    s.createSession("fresh walk");
+    expect(s.listReplies()).toEqual([]);
+    expect(s.getFocus()).toBeNull();
+  });
 });

@@ -113,7 +113,8 @@ function commentRows(c: Comment, cols: number): Row[] {
   const rows: Row[] = [];
   const bar = yellow("│");
   rows.push({ ansi: `      ${bar} ${dim(`${c.file}:${c.line}`)}` });
-  for (const l of wrap(c.body, cols - 10)) rows.push({ ansi: `      ${bar} ${l}` });
+  // Preserve the comment's own line breaks, wrapping each line to width.
+  for (const line of c.body.split("\n")) for (const w of wrap(line, cols - 10)) rows.push({ ansi: `      ${bar} ${w}` });
   return rows;
 }
 

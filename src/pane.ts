@@ -12,20 +12,23 @@ import {
   addCommentToCurrentStep,
   clearPaneId,
   clearReviewerPid,
+  currentReplies,
   getFocus,
   getPaneId,
   getSession,
-  listReplies,
   setReviewerPid,
   stateDir,
   writeReply,
 } from "./store.ts";
 import { activeDriver } from "./panes/index.ts";
 import { buildContentRows, type Row } from "./render/rows.ts";
+import { layoutInput } from "./render/inputbox.ts";
+import { backspace, deleteWord, insert, left, right, wordLeft, wordRight, type Edit } from "./edit.ts";
 import type { Focus, LineAnchor, LineComment, Session, Step } from "./types.ts";
 
 const HEADER_H = 3;
-const FOOTER_H = 3;
+const FOOTER_H = 3; // minimum footer height (borders + one input row)
+const MAX_INPUT_ROWS = 8; // the input box grows up to this many lines, then scrolls
 
 // ── Screen control ────────────────────────────────────────────────────────
 const ALT_ON = "\x1b[?1049h";
@@ -53,6 +56,7 @@ interface State {
   rows: Row[];
   scroll: number;
   input: string;
+  cursor: number;
   commentTarget: LineAnchor | null;
   dragging: boolean;
   dragStartLine: number;
@@ -72,6 +76,7 @@ const state: State = {
   rows: [],
   scroll: 0,
   input: "",
+  cursor: 0,
   commentTarget: null,
   dragging: false,
   dragStartLine: 0,
@@ -136,11 +141,40 @@ function cols(): number {
 function screenRows(): number {
   return Math.max(stdout.rows || 24, HEADER_H + FOOTER_H + 2);
 }
+/** Width available for input text inside the box ("│ › " … " │"). */
+function inputInner(): number {
+  return Math.max(4, cols() - 6);
+}
+/** Cap on input rows so the box never crowds the diff off a short screen. */
+function maxInputRows(): number {
+  return Math.max(1, Math.min(MAX_INPUT_ROWS, screenRows() - HEADER_H - 5));
+}
+/** How many display rows the input box occupies right now (borders excluded). */
+function inputRowCount(): number {
+  if (state.working) return 1;
+  return layoutInput(state.input, state.cursor, inputInner(), maxInputRows()).rows.length || 1;
+}
+/** Footer height grows with the input: top border + input rows + bottom border. */
+function footerHeight(): number {
+  return inputRowCount() + 2;
+}
 function viewportH(): number {
-  return Math.max(1, screenRows() - HEADER_H - FOOTER_H);
+  return Math.max(1, screenRows() - HEADER_H - footerHeight());
 }
 function maxScroll(): number {
   return Math.max(0, state.rows.length - viewportH());
+}
+
+/** Apply a pure editor transform to the input text + cursor. */
+function applyEdit(fn: (e: Edit) => Edit): void {
+  if (state.working) return;
+  const r = fn({ text: state.input, cursor: state.cursor });
+  state.input = r.text;
+  state.cursor = r.cursor;
+}
+function clearInput(): void {
+  state.input = "";
+  state.cursor = 0;
 }
 
 /** Reload session/focus and rebuild rows. Resets scroll when the agent advances. */
@@ -162,7 +196,7 @@ function loadState(): void {
     scheduleClose();
   }
 
-  state.rows = step ? buildContentRows(step, listReplies(), cols(), state.pending) : [{ ansi: dim("Waiting for the agent to present a step…") }];
+  state.rows = step ? buildContentRows(step, currentReplies(), cols(), state.pending) : [{ ansi: dim("Waiting for the agent to present a step…") }];
 
   if (advanced) {
     // The agent moved on — clear the working state and any leftover drafts.
@@ -212,7 +246,7 @@ function header(c: number): string[] {
   return [line1 + CLEAR_EOL, line2 + CLEAR_EOL, line3 + CLEAR_EOL];
 }
 
-function footer(c: number): { lines: string[]; caretCol: number } {
+function footer(c: number): { lines: string[]; caretLineIndex: number; caretCol: number } {
   if (state.working) {
     const top = dim(fillRule("╭─ sent ", c - 1) + "╮");
     const label = `${SPINNER[state.spinFrame]} Agent is reviewing your comments…`;
@@ -221,7 +255,7 @@ function footer(c: number): { lines: string[]; caretCol: number } {
     const pad = " ".repeat(Math.max(0, inner - clipped.length));
     const mid = dim("│") + " " + accent(clipped.slice(0, 1)) + clipped.slice(1) + pad + " " + dim("│");
     const bottom = dim(fillRule("╰─ waiting for the next step ", c - 1) + "╯");
-    return { lines: [top + CLEAR_EOL, mid + CLEAR_EOL, bottom + CLEAR_EOL], caretCol: 1 };
+    return { lines: [top + CLEAR_EOL, mid + CLEAR_EOL, bottom + CLEAR_EOL], caretLineIndex: 1, caretCol: 1 };
   }
   const target = state.commentTarget;
   const topLabel = target ? ` commenting on ${targetLabel(target)} ` : ` comment `;
@@ -229,22 +263,26 @@ function footer(c: number): { lines: string[]; caretCol: number } {
     ? accent(fillRule("╭─" + topLabel, c - 1) + "╮")
     : dim(fillRule("╭─" + topLabel, c - 1) + "╮");
 
-  const prefix = "│ › ";
-  const budget = Math.max(4, c - prefix.length - 2); // -2 for " │" on the right
-  // Keep the footer one line: show embedded newlines as a ⏎ marker.
-  let shown = state.input.replace(/\n/g, "⏎ ");
-  if (shown.length > budget) shown = shown.slice(shown.length - budget);
-  const padLen = Math.max(0, budget - shown.length);
-  const inputLine = dim("│") + " " + accent("›") + " " + shown + " ".repeat(padLen) + " " + dim("│");
-  const caretCol = 1 + 1 + 1 + 1 + shown.length + 1; // │, space, ›, space, text → 1-based
+  // Multi-line input: one row per line, the caret's line windowed so it stays
+  // visible. Continuation rows align under the first row's text (after "│ › ").
+  const inner = inputInner();
+  const layout = layoutInput(state.input, state.cursor, inner, maxInputRows());
+  const rows = layout.rows.length ? layout.rows : [""];
+  const inputLines = rows.map((r, i) => {
+    const prefix = i === 0 ? dim("│") + " " + accent("›") + " " : dim("│") + "   ";
+    const pad = " ".repeat(Math.max(0, inner - r.length));
+    return prefix + r + pad + " " + dim("│") + CLEAR_EOL;
+  });
+  const caretLineIndex = 1 + layout.caretRow; // +1 for the top border (line 0)
+  const caretCol = 5 + layout.caretCol; // "│ › " = 4 cols, so text starts at column 5
 
   const staged = state.pending.length ? `${state.pending.length} staged · ` : "";
   const hint = state.status
     ? ` ${state.status} `
-    : ` ${staged}click a line · Enter sends · Opt+Enter newline · ↑↓/wheel scroll · Ctrl-C quit `;
+    : ` ${staged}Enter sends · Opt+Enter newline · ⌥←→ word · ⌥⌫ del word · ↑↓ scroll · Ctrl-C quit `;
   const bottom = dim(fillRule("╰─" + truncateVisible(hint, c - 4), c - 1) + "╯");
 
-  return { lines: [top + CLEAR_EOL, inputLine + CLEAR_EOL, bottom + CLEAR_EOL], caretCol };
+  return { lines: [top + CLEAR_EOL, ...inputLines, bottom + CLEAR_EOL], caretLineIndex, caretCol };
 }
 
 /** The end-of-walk screen: centered, then the pane closes itself. */
@@ -292,7 +330,9 @@ function render(): void {
   const foot = footer(c);
   lines.push(...foot.lines);
 
-  const caretRow = HEADER_H + vh + 2; // 1-based: the input line
+  // Footer lines begin at screen row HEADER_H + vh + 1; the caret sits on the
+  // caretLineIndex-th of them (1-based screen rows).
+  const caretRow = HEADER_H + vh + 1 + foot.caretLineIndex;
   const out =
     CURSOR_HIDE +
     "\x1b[H" +
@@ -363,7 +403,7 @@ function submit(): void {
     state.pending.push({ file: target.file, line: target.line, side: target.side, ...(target.endLine ? { endLine: target.endLine } : {}), text });
     state.commentTarget = null;
     state.dragging = false;
-    state.input = "";
+    clearInput();
     state.status = `staged ${state.pending.length} comment(s) — Enter to send, or click another line`;
     loadState();
     return;
@@ -387,7 +427,7 @@ function complete(message: string): void {
   state.working = true;
   state.workingSeq = state.focus?.seq ?? 0;
   state.pending = [];
-  state.input = "";
+  clearInput();
   state.commentTarget = null;
   state.dragging = false;
   startSpinner();
@@ -411,16 +451,42 @@ function handleData(buf: string): void {
 
     if (ch === "\x1b") {
       const rest = buf.slice(i);
-      // Opt/Alt+Enter (ESC + CR/LF) inserts a newline instead of sending.
+      // Opt/Alt+Enter or Shift+Enter (ESC + CR/LF) inserts a newline.
       if (rest[1] === "\r" || rest[1] === "\n") {
-        if (!state.working) state.input += "\n";
+        applyEdit((e) => insert(e, "\n"));
         i += 2;
         continue;
       }
+      // Option+Delete (ESC + DEL/BS) deletes the previous word.
+      if (rest[1] === "\x7f" || rest[1] === "\b") {
+        applyEdit(deleteWord);
+        i += 2;
+        continue;
+      }
+      // Readline-style word motion: Alt+b / Alt+f.
+      if (rest[1] === "b") { applyEdit(wordLeft); i += 2; continue; }
+      if (rest[1] === "f") { applyEdit(wordRight); i += 2; continue; }
       const mouse = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])/.exec(rest);
       if (mouse) {
         handleMouse(parseInt(mouse[1]!, 10), parseInt(mouse[3]!, 10), mouse[4] as "M" | "m");
         i += mouse[0].length;
+        continue;
+      }
+      // Option+Arrow (modified arrows: ESC [ 1 ; <mod> <A-D>) moves by word.
+      const modArrow = /^\x1b\[1;\d+([A-D])/.exec(rest);
+      if (modArrow) {
+        if (modArrow[1] === "C") applyEdit(wordRight);
+        else if (modArrow[1] === "D") applyEdit(wordLeft);
+        i += modArrow[0].length;
+        continue;
+      }
+      // Kitty/modifyOtherKeys forms for a modified Enter (newline) or Backspace.
+      const csiU = /^\x1b\[(\d+);\d+u/.exec(rest) ?? /^\x1b\[27;\d+;(13)~/.exec(rest);
+      if (csiU) {
+        const code = parseInt(csiU[1]!, 10);
+        if (code === 13) applyEdit((e) => insert(e, "\n"));
+        else if (code === 127) applyEdit(deleteWord);
+        i += csiU[0].length;
         continue;
       }
       const nav = /^\x1b\[(A|B|C|D|H|F|5~|6~)/.exec(rest);
@@ -428,6 +494,8 @@ function handleData(buf: string): void {
         const key = nav[1];
         if (key === "A") scrollBy(-1);
         else if (key === "B") scrollBy(1);
+        else if (key === "C") applyEdit(right);
+        else if (key === "D") applyEdit(left);
         else if (key === "5~") scrollBy(-viewportH());
         else if (key === "6~") scrollBy(viewportH());
         else if (key === "H") state.scroll = 0;
@@ -452,17 +520,22 @@ function handleData(buf: string): void {
       teardown();
       process.exit(0);
     }
+    if (ch === "\x17") { // Ctrl-W: delete the previous word
+      applyEdit(deleteWord);
+      i += 1;
+      continue;
+    }
     if (ch === "\r" || ch === "\n") {
       submit();
       i += 1;
       continue;
     }
     if (ch === "\x7f" || ch === "\b") {
-      if (!state.working) state.input = state.input.slice(0, -1);
+      applyEdit(backspace);
       i += 1;
       continue;
     }
-    if (buf.charCodeAt(i) >= 0x20 && !state.working) state.input += ch;
+    if (buf.charCodeAt(i) >= 0x20) applyEdit((e) => insert(e, ch));
     i += 1;
   }
   render();

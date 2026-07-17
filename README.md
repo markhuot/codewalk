@@ -35,7 +35,7 @@ bun run build              # bundle to dist/cli.js (Node target)
 
 ```sh
 walk start "PR #17: streaming diff narration"
-gh pr diff 17 | pick-the-file-you-want | walk present --path src/walk.ts \
+gh pr diff 17 | pick-the-file-you-want | walk present \
      --title "The new interface" \
      --note "This makes **live** diff narration possible." \
      --comment "42:this gate short-circuits when there's no TTY" \
@@ -57,22 +57,22 @@ The reviewer is turn-based: comment on the change on screen, and it advances whe
 
 ## The diff you pipe in
 
-`walk present` doesn't fetch anything — you hand it the diff on stdin and it renders it. That keeps codewalk out of the diff-acquisition business: you get the hunk however you like (a local `git`/`gh` command, an API pull from a repo you never cloned, or a hunk you author by hand for a change that doesn't exist yet) and pipe it in.
+`walk present` doesn't fetch anything — you hand it a unified diff on stdin and it renders it. That keeps codewalk out of the diff-acquisition business: you get the diff however you like (a local `git`/`gh` command, an API pull from a repo you never cloned, or one you author by hand for a change that doesn't exist yet) and pipe it in. The diff carries its own path in the `---`/`+++` header, so there's one input shape and no `--path` flag.
 
 ```sh
-# The common case: a bare unified hunk. The file envelope is synthesized from
-# --path, and a real `@@ -0,0 +47,3 @@` renders with the right gutter numbers.
-printf '@@ -0,0 +47,3 @@\n+const a = 1;\n+const b = 2;\n+const c = 3;\n' \
-  | walk present --path src/foo.ts --title "The new interface"
+# The common case: pipe a real diff straight in.
+git diff HEAD -- src/foo.ts | walk present --title "The new interface"
 
 # Pull one file out of a remote PR you never cloned and narrate it.
-gh pr diff 17 -R owner/repo | extract-one-file | walk present --path src/walk.ts
+gh pr diff 17 -R owner/repo | extract-one-file | walk present
 
-# A full `diff --git` is used as-is (the path comes from the diff itself).
-git show <sha> -- src/a.ts | walk present
+# Hand-author a slice: add the ---/+++ header, then the hunk. The `+47` makes
+# the gutter start at line 47. `--- /dev/null` marks the file added.
+{ printf '%s\n' '--- /dev/null' '+++ b/src/foo.ts' '@@ -0,0 +47,2 @@'; \
+  printf '+const a = 1;\n+const b = 2;\n'; } | walk present --title "New helper"
 ```
 
-`--path` is a label, not a file on disk. Decorate the step: `--title`, `--note "<markdown>"`, `--step 1/4` (a cosmetic progress label), and comments — repeat `--comment "line:message"`, or use `--comment:<line> "message"` (append `:old` for the old side).
+The path in the diff is a label, not a file on disk (the parser reads it, never the filesystem). Decorate the step: `--title`, `--note "<markdown>"`, `--step 1/4` (a cosmetic progress label), and repeatable `--comment "line:message"`.
 
 ## How it works
 
@@ -89,7 +89,7 @@ git show <sha> -- src/a.ts | walk present
 | Command | Purpose |
 |---|---|
 | `start <title>` | Begin a walk (one active session). |
-| `present --path <label> [--title] [--note] [--comment] [--step] [--render] [--no-wait] [--timeout] [--port] [--open]` | Build one step from the piped diff, stage it, and block for a reply. |
+| `present [--title] [--note] [--comment] [--step] [--render] [--no-wait] [--timeout] [--port] [--open]` | Build one step from the piped diff, stage it, and block for a reply. |
 | `await [--timeout]` | Block for the next reply without presenting. |
 | `finish [<summary>]` | End the walk: completion screen, then the pane closes. |
 | `reply <text...> [--step]` | Record a reply (tooling/tests). |

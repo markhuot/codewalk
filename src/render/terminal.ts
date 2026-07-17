@@ -101,7 +101,8 @@ function renderComment(cm: Comment, width: number): string {
   const bar = yellow("│");
   const anchor = dim(`${cm.file}:${cm.line}`);
   const budget = Math.max(20, width - 13);
-  const lines = wrap(cm.body, budget).map((l) => `           ${bar} ${l}`);
+  // Preserve the comment's own line breaks, wrapping each line to width.
+  const lines = cm.body.split("\n").flatMap((line) => wrap(line, budget)).map((l) => `           ${bar} ${l}`);
   return `           ${bar} ${anchor}\n${lines.join("\n")}`;
 }
 
