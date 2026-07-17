@@ -59,6 +59,17 @@ Two accepted stdin shapes:
 
 Author a real hunk header — the `+47` in `@@ -0,0 +47,3 @@` is what makes the gutter start at line 47 instead of 1. To slice one file out of a bigger diff: `gh pr diff 17 -R owner/repo | <keep the one file's hunk> | walk diff --path <file>`.
 
+**Build the hunk inline; never write a temporary helper script.** Producing a hunk is a one-liner with standard tools, right in the command — don't create a `slice.mjs` / `hunk.sh` scratch file to do it. Pipe a real diff when you have one, or construct a bare hunk from a file on disk with `sed`:
+
+```sh
+# A real change: let git/gh emit the hunk, pipe it straight in.
+git diff HEAD -- src/cli.ts | walk diff --path src/cli.ts --title "…"
+
+# Showing a region of an existing file as an added block: prefix with sed, no script.
+{ echo "@@ -0,0 +41,31 @@"; sed -n '41,71p' src/diff/author.ts | sed 's/^/+/'; } \
+  | walk diff --path src/diff/author.ts --title "…"
+```
+
 Decorate a diff step with `--title`, `--note "<markdown>"`, and comments — repeat `--comment "line:message"`, or use `--comment:<line> "message"` (append `:old` for the old side, e.g. `--comment:12:old "…"`). **Show the smallest hunk that makes the point** — one file per step, ~15-20 lines. A good walk is a sequence of small, captioned diffs, not one giant dump.
 
 ## Handling replies
