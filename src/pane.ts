@@ -223,7 +223,8 @@ function footer(c: number): { lines: string[]; caretCol: number } {
 
   const prefix = "│ › ";
   const budget = Math.max(4, c - prefix.length - 2); // -2 for " │" on the right
-  let shown = state.input;
+  // Keep the footer one line: show embedded newlines as a ⏎ marker.
+  let shown = state.input.replace(/\n/g, "⏎ ");
   if (shown.length > budget) shown = shown.slice(shown.length - budget);
   const padLen = Math.max(0, budget - shown.length);
   const inputLine = dim("│") + " " + accent("›") + " " + shown + " ".repeat(padLen) + " " + dim("│");
@@ -232,7 +233,7 @@ function footer(c: number): { lines: string[]; caretCol: number } {
   const staged = state.pending.length ? `${state.pending.length} staged · ` : "";
   const hint = state.status
     ? ` ${state.status} `
-    : ` ${staged}click a line to comment · Enter to send · ↑↓/wheel scroll · Ctrl-C quit `;
+    : ` ${staged}click a line · Enter sends · Opt+Enter newline · ↑↓/wheel scroll · Ctrl-C quit `;
   const bottom = dim(fillRule("╰─" + truncateVisible(hint, c - 4), c - 1) + "╯");
 
   return { lines: [top + CLEAR_EOL, inputLine + CLEAR_EOL, bottom + CLEAR_EOL], caretCol };
@@ -370,6 +371,12 @@ function handleData(buf: string): void {
 
     if (ch === "\x1b") {
       const rest = buf.slice(i);
+      // Opt/Alt+Enter (ESC + CR/LF) inserts a newline instead of sending.
+      if (rest[1] === "\r" || rest[1] === "\n") {
+        if (!state.working) state.input += "\n";
+        i += 2;
+        continue;
+      }
       const mouse = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])/.exec(rest);
       if (mouse) {
         handleMouse(parseInt(mouse[1]!, 10), parseInt(mouse[3]!, 10), mouse[4] as "M" | "m");

@@ -173,7 +173,7 @@ export function renderPage(): string {
 <main id="walk"></main>
 <div id="working" class="working" hidden><span class="spinner"></span><span id="working-text">Agent is reviewing your comments…</span></div>
 <form id="composer" class="composer" hidden>
-  <textarea id="composer-input" rows="1" placeholder="Overall note for this step (optional). Click any line to comment on it."></textarea>
+  <textarea id="composer-input" rows="1" placeholder="Overall note (optional) · Enter sends, Shift+Enter for a newline · click any line to comment"></textarea>
   <button type="submit" id="composer-send">Complete step</button>
 </form>
 <div id="status" class="status">connecting…</div>
@@ -413,7 +413,7 @@ function openDraft(row) {
   tr.className = 'draft-row';
   tr.innerHTML = '<td class="gutter"></td><td class="gutter"></td><td><div class="draft-box">' +
     '<div class="draft-label"><span class="draft-tag">new comment</span> ' + file + ':' + line + '</div>' +
-    '<textarea rows="2" placeholder="Comment on this line… (Enter to stage, Esc to cancel)"></textarea>' +
+    '<textarea rows="2" placeholder="Comment on this line… (Enter stages · Shift+Enter newline · Esc cancels)"></textarea>' +
     '<div class="draft-actions"><button class="draft-add" type="button">Add comment</button>' +
     '<button class="draft-cancel" type="button">Cancel</button></div></div></td>';
   row.after(tr);
@@ -429,7 +429,7 @@ function openDraft(row) {
   tr.querySelector('.draft-add').addEventListener('click', commit);
   tr.querySelector('.draft-cancel').addEventListener('click', cancel);
   ta.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); commit(); }
+    if (e.key === 'Enter' && !e.shiftKey && !e.altKey) { e.preventDefault(); commit(); }
     else if (e.key === 'Escape') { e.preventDefault(); cancel(); }
   });
 }
@@ -476,7 +476,8 @@ async function refresh() {
 
 composer.addEventListener('submit', (e) => { e.preventDefault(); complete(); });
 input.addEventListener('input', () => { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 160) + 'px'; });
-input.addEventListener('keydown', (e) => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); complete(); } });
+// Enter sends; Shift+Enter and Opt/Alt+Enter insert a newline.
+input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.altKey) { e.preventDefault(); complete(); } });
 
 function connect() {
   const es = new EventSource('/events');
