@@ -58,3 +58,14 @@ export function deleteWord(e: Edit): Edit {
   if (start === e.cursor) return e;
   return { text: e.text.slice(0, start) + e.text.slice(e.cursor), cursor: start };
 }
+
+/** Move to the start of the current line (just after the previous newline). */
+export function lineStart(e: Edit): Edit {
+  return { ...e, cursor: e.text.lastIndexOf("\n", e.cursor - 1) + 1 };
+}
+
+/** Move to the end of the current line (just before the next newline). */
+export function lineEnd(e: Edit): Edit {
+  const nl = e.text.indexOf("\n", e.cursor);
+  return { ...e, cursor: nl === -1 ? e.text.length : nl };
+}

@@ -23,7 +23,7 @@ import {
 import { activeDriver } from "./panes/index.ts";
 import { buildContentRows, type Row } from "./render/rows.ts";
 import { layoutInput } from "./render/inputbox.ts";
-import { backspace, deleteWord, insert, left, right, wordLeft, wordRight, type Edit } from "./edit.ts";
+import { backspace, deleteWord, insert, left, lineEnd, lineStart, right, wordLeft, wordRight, type Edit } from "./edit.ts";
 import type { Focus, LineAnchor, LineComment, Session, Step } from "./types.ts";
 
 const HEADER_H = 3;
@@ -279,7 +279,7 @@ function footer(c: number): { lines: string[]; caretLineIndex: number; caretCol:
   const staged = state.pending.length ? `${state.pending.length} staged · ` : "";
   const hint = state.status
     ? ` ${state.status} `
-    : ` ${staged}Enter sends · Opt+Enter newline · ⌥←→ word · ⌥⌫ del word · ↑↓ scroll · Ctrl-C quit `;
+    : ` ${staged}Enter sends · Opt+Enter newline · ⌥←→ word · ^A/^E home/end · ⌥⌫ del word · ↑↓ scroll · ^C quit `;
   const bottom = dim(fillRule("╰─" + truncateVisible(hint, c - 4), c - 1) + "╯");
 
   return { lines: [top + CLEAR_EOL, ...inputLines, bottom + CLEAR_EOL], caretLineIndex, caretCol };
@@ -522,6 +522,16 @@ function handleData(buf: string): void {
     }
     if (ch === "\x17") { // Ctrl-W: delete the previous word
       applyEdit(deleteWord);
+      i += 1;
+      continue;
+    }
+    if (ch === "\x01") { // Ctrl-A: jump to the start of the line
+      applyEdit(lineStart);
+      i += 1;
+      continue;
+    }
+    if (ch === "\x05") { // Ctrl-E: jump to the end of the line
+      applyEdit(lineEnd);
       i += 1;
       continue;
     }

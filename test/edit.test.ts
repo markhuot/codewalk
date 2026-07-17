@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { backspace, deleteWord, insert, left, nextWord, prevWord, right, wordLeft, wordRight } from "../src/edit.ts";
+import { backspace, deleteWord, insert, left, lineEnd, lineStart, nextWord, prevWord, right, wordLeft, wordRight } from "../src/edit.ts";
 import { layoutInput } from "../src/render/inputbox.ts";
 
 describe("edit: insert and delete at the cursor", () => {
@@ -51,6 +51,25 @@ describe("edit: deleteWord", () => {
   });
   test("only deletes back to the cursor, not past it", () => {
     expect(deleteWord({ text: "foo bar baz", cursor: 7 })).toEqual({ text: "foo  baz", cursor: 4 });
+  });
+});
+
+describe("edit: line home/end", () => {
+  const text = "abc\ndef\nghi";
+  test("lineStart jumps to just after the previous newline", () => {
+    expect(lineStart({ text, cursor: 6 }).cursor).toBe(4); // within "def" → start of "def"
+    expect(lineStart({ text, cursor: 2 }).cursor).toBe(0); // first line → 0
+    expect(lineStart({ text, cursor: 4 }).cursor).toBe(4); // already at line start → stays
+  });
+  test("lineEnd jumps to just before the next newline", () => {
+    expect(lineEnd({ text, cursor: 4 }).cursor).toBe(7); // within "def" → before the \n
+    expect(lineEnd({ text, cursor: 9 }).cursor).toBe(11); // last line → end of text
+    expect(lineEnd({ text, cursor: 7 }).cursor).toBe(7); // already at line end → stays
+  });
+  test("home/end stay within the current line, not the whole buffer", () => {
+    // cursor in the middle line: home/end land on that line's bounds only.
+    expect(lineStart({ text, cursor: 5 }).cursor).toBe(4);
+    expect(lineEnd({ text, cursor: 5 }).cursor).toBe(7);
   });
 });
 
